@@ -1,0 +1,58 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+
+<config>
+
+  <entry key="title" label="Title">Gadget Name</entry>
+  
+  <entry key="description" private="true">Description of gadget</entry>
+    
+  <entry key="icon" private="true"></entry> <!-- icon image -->
+
+  <entry key="thumbnail" private="true"></entry>
+
+  <entry key="types" private="true">sidebar</entry> <!-- dashboard or sidebar -->
+
+  <entry key="notifications" private="true">view_changed</entry>
+  
+  <entry key="font_size" label="Font Size" private="true">14px</entry>
+
+  <entry key="sidebar_context" private="true"></entry> <!-- (sidebar only) -->
+  
+  <entry key="initial_height" private="true">480</entry> <!-- (sidebar only) -->
+
+  <entry key="columns" private="true">1</entry> <!-- 1, 2, or 3 --><!-- (dashboard only) -->
+
+</config>
+
+
+        <!-- Flags
+
+            private      : If set to true, the property will not be exposed anywhere in the UI.
+
+            overwritable : If set to true, the property will be exposed in the gadget's user-accessible
+                           configuration modal. If false or absent, the property will only be exposed
+                           in the gadget management screen. (If the private flag is set to true, this
+                           property is ignored.)
+        -->
+
+
+        <!-- Sidebar contexts
+
+            If the sidebar_context property is specified, the sidebar gadget will only appear when the
+            Omni CMS app is "in" the specified context. Current supported contexts are as follows:
+
+            "page"              : True when the subject of the current view is an individual page. Examples include
+                                  page preview, page edit, and page properties.
+            "page-params"       : True for Page Parameters view
+            "page-preview"      : True for Page preview view
+            "page-edit-preview" : True for Page Edit preview view
+            "edit"              : True only for WYSIWYG editing views and source editing views.
+            "justedit"          : True for JustEdit
+            "legacy-wysiwyg"    : True for Legacy WYSIWYG (not JustEdit)
+            "source-edit"       : True for Source editor
+            "asset"             : True when the subject of the current view is an individual asset.
+            "asset-edit"        : True for Asset Edit preview view
+            "asset-preview"     : True for Asset preview view
+            "file"              : True when the subject of the current view is either an individual page or an
+                                  individual asset.
+        -->
