@@ -1,3 +1,10 @@
+/**
+ * gadget-common.js
+ * 
+ * @author Louis Vulpes
+ * @copyright Missouri State University 2024-2026
+ **/
+
 /** ======== VARIABLES ======== **/
 
 const DEV_SITES = ['templates', 'webincludes', 'zz-CMS-Dev', 'zz-Omni-Dev', 'zz-sitetemplate-sgf'];
@@ -45,7 +52,6 @@ function fadeOutElement(element, duration = 50) {
 
       clearInterval(timer);
 
-      //element.classList.add('d-none');
       element.remove();
 
     }
@@ -190,27 +196,6 @@ async function collectDirectoryInfo(directory) {
 
 }
 
-async function getDirectorySettings(directory) {
-
-  return api.directories_settings({site : directory.site, path : directory.path})
-
-    .then(data => {
-
-      let settings = {};
-
-      settings.access = (data.access === '') ? 'N/A' : data.access;
-      settings.extensions = data.extensions;
-      settings.no_publish = data.no_publish;
-      settings.template_group = (!data.template_group) ? 'N/A' : data.template_group;
-      settings.variables = data.variables;
-      settings.inherited_vars = data.inherited_variables;
-
-      return settings;
-
-    });
-
-}
-
 async function collectDirectorySettings(directory) {
 
   return api.directories_settings({site : directory.site, path : directory.path})
@@ -327,6 +312,14 @@ async function createDirectory(name, site, path,  config = {}) {
       type : 'directory',
 
     }));
+
+}
+
+/** ------ [ESCAPE] ------ **/
+
+function escapeDmTag (tag = '') {
+
+  return tag.replace(/\{/g, '\\{').replace(/\}/g, '\\}');
 
 }
 
@@ -789,7 +782,9 @@ async function generateZIP(files = [], startingDirectory = '/') {
 }
 
 /** -------- [GET] -------- **/
+
 /** ---- [GET ACCESS] ---- **/
+
 async function getAccessGroups() {
 
   return api.reports_custom({report : 'groups', g_memberlist: 'on'})
@@ -807,6 +802,7 @@ async function getAccessGroups() {
 }
 
 /** ---- [GET ASSETS] ---- **/
+
 async function getAssets(page) {
 
   return api.files_dependencies({site : page.site, path : page.path})
@@ -831,6 +827,8 @@ async function getAssets(page) {
     });
 
 }
+
+/** ---- [GET BINARY FILES] ---- **/
 
 async function getBinaryFiles(page) {
 
@@ -862,15 +860,7 @@ async function getBinaryFiles(page) {
 
 async function getComponents() {
 
-  return api.components_list()
-
-    .then(data => {
-
-      log('components', data);
-
-      return data;
-
-    });
+  return api.components_list();
 
 }
 
@@ -878,13 +868,16 @@ async function getComponentDependents(name) {
 
   return api.components_dependents({name : name})
 
-    .then(data => {
+    .then(data => data
 
-      log('component dependents', data);
+      .map(entry => ({
 
-      return data;
+        site : entry.sitename,
+        path : entry.path,
+        dm_tag : '{{f:' + entry.pageID + '}}',
+        type : 'page',
 
-    });
+      })));
 
 }
 
@@ -892,7 +885,7 @@ async function getComponentDependents(name) {
 
 async function getCurrentFile() {
 
-  return gadget.oucGetCurrentFileInfo()
+  return gadget.getFileInfo()
 
     .then(data => {
 
@@ -918,7 +911,7 @@ async function getCurrentFile() {
 
 async function getCurrentLocation() {
 
-  return gadget.oucGetCurrentLocation()
+  return gadget.getLocation()
 
     .then(location => {
 
@@ -1033,6 +1026,8 @@ async function getDmTagByUrl(url) {
 
 async function getDirectories(directory, includeSubdirs = false, filters = []) {
 
+  let startPath = (typeof directory === 'string') ? directory : directory.path
+
   return api.reports_custom({
 
     report : 'directories',
@@ -1041,7 +1036,7 @@ async function getDirectories(directory, includeSubdirs = false, filters = []) {
     d_dtag : 'on',
     //d_tmplgroup : 'on',
     //d_dirvariables : 'on',
-    d_address_str : directory.path,
+    d_address_str : startPath,
 
     })
 
@@ -1049,7 +1044,7 @@ async function getDirectories(directory, includeSubdirs = false, filters = []) {
 
       .filter(entry => {
 
-        if (!includeSubdirs) if (entry.d_address !== directory.path) return false;
+        if (!includeSubdirs) if (entry.d_address !== startPath) return false;
 
         if (['/_navigation', '/_resources', '/bin', ...filters].some(value => entry.d_address.includes(value))) return false;
 
@@ -1143,6 +1138,27 @@ async function getDirectoryEntry(directory, name) {
 
 }
 
+async function getDirectorySettings(directory) {
+
+  return api.directories_settings({site : directory.site, path : directory.path})
+
+    .then(data => {
+
+      let settings = {};
+
+      settings.access = (data.access === '') ? 'N/A' : data.access;
+      settings.extensions = data.extensions;
+      settings.no_publish = data.no_publish;
+      settings.template_group = (!data.template_group) ? 'N/A' : data.template_group;
+      settings.variables = data.variables;
+      settings.inherited_vars = data.inherited_variables;
+
+      return settings;
+
+    });
+
+}
+
 /** ------ [GET ELEMENT] ------ **/
 
 function getElement(query) {
@@ -1169,21 +1185,17 @@ function getElements(query) {
 
 }
 
+/** ------ [GET FIND RESULTS] ------ **/
+
 async function getFindReplaceResults(id, site) {
 
   await new Promise(resolve => setTimeout(resolve, 1000));
 
   return api.sites_findreplacestatus({id : id, site : site})
 
-    .then(results => {
+    .then(results => (results.finished) ? results : 
 
-      log('job results check', results);
-
-      return results;
-
-    })
-
-    .then(results => (results.finished) ? results : getFindReplaceResults(id, site));
+      getFindReplaceResults(id, site));
 
 }
 
@@ -1267,9 +1279,18 @@ async function getPageContentLinks(page) {
 
 }
 
-async function getPageSource(page) {
+async function getPageSource(page, label = '') {
 
-  return api.files_source({site : page.site, path : page.path})
+  let config = {
+
+    site : page.site,
+    path : page.path,
+
+  };
+
+  if (label != '') config.label = label;
+
+  return api.files_source(config)
 
     .then(data => data.source);
 
@@ -1331,7 +1352,7 @@ async function getSiteList(excludeDevSites = true) {
 
 async function getSites(excludeDevSites = true) {
 
-  return api.reports_custom({site : 'www', report : 'sites', s_serverpath : 'on'})
+  return api.reports_custom({site : gadget.site, report : 'sites', s_serverpath : 'on'})
 
     .then(report => {
 
@@ -1539,8 +1560,6 @@ async function unpublishPage(page, target = '') {
 
 async function replaceText(siteName, paths = ['/'], text = '', replacement = '') {
 
-  log('site replace text');
-
   return api.sites_findreplace({
 
     site : siteName,
@@ -1555,13 +1574,7 @@ async function replaceText(siteName, paths = ['/'], text = '', replacement = '')
 
   })
 
-    .then(job => {
-
-      log('job started', job);
-
-      return getFindReplaceResults(job.id, siteName);
-
-    });
+    .then(job => getFindReplaceResults(job.id, siteName));
 
 }
 
@@ -1616,22 +1629,22 @@ async function setDirectorySettings(directory, settings = {}) {
         site : directory.site,
         path : directory.path,
         access : data.access,
-        //approver : null,
-        //enforce_approver : false,
-        //exclude_orphan : false,
+        approver : data.approver,
+        enforce_approver : data.enforce_approver,
+        exclude_orphan : data.exclude_orphan,
         extensions : data.extensions,
-        //feed : null,
-        //image_size_set : null,
-        //negate_extensions : false,
+        feed : data.feed,
+        image_size_set : data.image_size_set,
+        negate_extensions : data.negate_extensions,
         no_publish : data.no_publish,
-        //no_search : false,
-        //no_sitemap : false,
-        //publishers : null,
+        no_search : data.no_search,
+        no_sitemap : data.no_sitemap,
+        publishers : data.publishers,
         template_group : data.template_group,
-        //toolbar : null,
-        //tracking_enabled : false,
-        //url_type : null,
-        //webhooks : false,
+        toolbar : data.toolbar,
+        tracking_enabled : data.tracking_enabled,
+        url_type : data.url_type,
+        webhooks : data.webhooks,
 
       };
 
@@ -1658,49 +1671,25 @@ async function setFileSettings(file, settings = {}) {
         site : file.site,
         path : file.path,
         access : data.access,
-        //approver : null,
-        //enforce_approver : false,
-        //exclude_orphan : false,
-        //dynamic_page_forward_uuid : null,
-        //feed : null,
-        //image_size_set : null,
-        //negate_extensions : false,
-        no_publish : data.no_publish,
-        //no_search : false,
-        //no_sitemap : false,
-        //page_forwarding : false,
-        //publishers : null,
-        //toolbar : null,
-        //tracking_enabled : false,
-        //url_type : null,
-        //webhooks : false,
+        approver : data.approver,
+        enforce_approver : data.enforce_approver,
+        exclude_orphan : data.exclude_orphan,
+        dynamic_page_forward_uuid : data.dynamic_page_forward_uuid,
+        feed : data.feed,
+        no_publish : !data.no_publish,
+        no_search : data.no_search,
+        no_sitemap : data.no_sitemap,
+        page_forwarding : data.page_forwarding,
+        publishers : data.publishers,
+        toolbar : data.toolbar,
+        tracking_enabled : data.tracking_enabled,
+        url_type : data.url_type,
 
       };
+
+      for (let key of Object.keys(config)) if (!config[key]) delete config[key]; // remove falsy entries
 
       for (let key of Object.keys(settings)) config[key] = settings[key];
-
-      return api.files_settings(config, 'POST');
-
-    });
-
-}
-
-async function setFileAccess(file, access) {
-
-  return api.files_settings({site : file.site, path : file.path})
-
-    .then(data => {
-
-      let config = {
-
-        site : file.site,
-        path : file.path,
-        access : access,
-        no_publish : data.no_publish,
-
-      };
-
-      log('set file access', data);
 
       return api.files_settings(config, 'POST');
 
@@ -1714,7 +1703,7 @@ async function setFilesAccess(files, access) {
 
   let filtered = files.filter(entry => entry.access !== access);
 
-  for (let file of filtered) promises.push(setFileAccess(file, access));
+  for (let file of filtered) promises.push(setFileSettings(file, {access : access}));
 
   return Promise.all(promises)
 
@@ -1724,6 +1713,12 @@ async function setFilesAccess(files, access) {
       verified : (files.length - results.length),
 
     }));
+
+}
+
+async function setLocation(location = '/') {
+
+  return gadget.setLocation(location);
 
 }
 
@@ -1738,15 +1733,7 @@ async function setView(view) {
 
     view.path;
 
-  return gadget.oucSetCurrentLocation(location);
-
-}
-
-async function setLocation(location = '') {
-
-  log('set location', location);
-
-  return gadget.oucSetCurrentLocation(location);
+  return setLocation(location);
 
 }
 
@@ -1801,7 +1788,7 @@ function sortUsersByCase(a, b) {
 /** -------- [TOGGLE] -------- **/
 
 /**
- * Toggles loading placeholder and display gadget.
+ * Toggles between #loading panel and #main panel.
  */
 async function toggleLoading() {
 
@@ -1822,34 +1809,8 @@ async function unlockFiles(files) {
 
   let promises = [];
 
-  for (let file of files) promises.push(api.files_checkin({ site : file.site, path : file.path }));
+  for (let file of files) promises.push(unlockFile(file));
 
   return Promise.all(promises);
-
-}
-
-/** ------ [####] ------ **/
-
-/** ------ [DISPLAY] ------ **/
-
-
-/**
- * Lets the user know that the gadget failed to load/connect/fetch.
- */
-function displayConnectionError() {
-
-  let container = document.querySelector('#loading');
-
-  container.classList.add('text-danger');
-
-  container.innerHTML = '<h3>Failed to connect</h3><p>Refresh the page.</p>';
-
-}
-
-/** ------ [ESCAPE] ------ **/
-
-function escapeDmTag (tag = '') {
-
-  return tag.replace(/\{/g, '\\{').replace(/\}/g, '\\}');
 
 }

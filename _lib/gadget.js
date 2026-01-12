@@ -1,331 +1,432 @@
-/* gadget.js (gadgetlib.js) */
+/**
+ * gadget.js
+ *
+ * @author Louis Vulpes
+ * @copyright Missouri State University 2024-2026
+ */
 
 (function (gadgetWindow) {
 
-    function getEnvironment() {
+/**
+ * Gadget bridge for iframe <-> host communication using window.postMessage.
+ * Exposes a global `window.gadget` with:
+ *   - request/response helpers (Deferred)
+ *   - environment collection
+ *   - a small event-bus via $(gadget).trigger(...)
+ */
 
-      return sendMessageToTop('get-environment');
+  "use strict";
 
-    }
+  function parseMessageData(raw) {
 
-    function getDataFromUrl() {
+  /**
+   * Best-effort parse for postMessage payloads.
+   * Host may send either objects or JSON strings.
+   */
 
-      var data = {};
+    if (typeof raw !== "string") return raw;
 
-      var split = location.href.split(/[\?&]/);
+    try {
 
-      var paramArray = split.splice(1);
-
-      data.url = split[0];
-
-      for (var param of paramArray) {
-
-        var parts = param.split('=');
-
-        data[parts[0]] = parts[1];
-
-      }
-
-      return data;
+      return JSON.parse(raw);
 
     }
 
-    function sendMessageToTop(name, payload) {
+    catch (e) {
 
-      var deferred = null;
+      console.log("Cannot parse message:", raw);
 
-      var msgid = Math.random().toString().slice(2);
+      return null;
 
-      var message = {
+    }
 
-        name : name, 
-        gid : gadget.gid,
-        origin : gadget.url,
-        token : gadget.token,
-        place : gadget.place,
-        payload : payload,
-        callback : msgid,
+  }
 
-      };
+  /**
+   * Security boundary:
+   * Only accept messages from the expected host origin.
+   * Consider also checking `event.source === gadgetWindow.top` if you want to
+   * guarantee the sender window is the parent (not just the same origin).
+   */
+  const isTrustedEvent = (event) => event.source === gadgetWindow.top && event.origin === gadget.msghost;
 
-      deferred = new $.Deferred();
+  function sendMessageToTop(name, payload, options) {
 
-      var _messageHandler = function (event) {
+  /**
+   * Send a request to the host window and resolve when the matching response arrives.
+   * Message listeners timeout if the host never replies.
+   */
 
-        if (event.origin != gadget.msghost) return;
+    options = options || {};
 
-        var message = event.data;
+    // Timeout precedence: per-call option -> gadget.requestTimeoutMs -> default
+    var timeoutMs = (typeof options.timeoutMs === "number") ?
 
-        if (typeof message == 'string') {
+      options.timeoutMs :
 
-          try {
+      (typeof gadget.requestTimeoutMs === "number") ?
 
-            message = JSON.parse(message);
+        gadget.requestTimeoutMs :
 
-          }
+        15000;
 
-          catch (e) {
+    // Callback id ties request <-> response together.
+    var msgid = Math.random().toString().slice(2);
 
-            console.log('Cannot parse message from OU Campus app : ', message);
+    // Envelope sent to host. Host can use these fields to identify the gadget + context.
+    var message = {
 
-            return;
+      name : name, 
+      gid : gadget.gid,
+      origin : gadget.url,
+      token : gadget.token,
+      place : gadget.place,
+      payload : payload,
+      callback : msgid,
 
-          }
+    };
 
-        }
+    var deferred = new $.Deferred();
 
-        if (message.callback == msgid) {
+    // Must have a known host origin so postMessage uses a specific targetOrigin.
+    if (!gadget.msghost) {
 
-          window.removeEventListener('message', _messageHandler, false);
+      deferred.reject({
 
-          deferred.resolve(message.payload);
+        code: 'missing_msghost',
+        message: 'gadget.msghost is not set; cannot postMessage() safely.',
+        name: name,
+        callback: msgid,
 
-        }
-
-      };
-
-      window.addEventListener('message', _messageHandler, false);
-
-      window.top.postMessage(JSON.stringify(message), gadget.msghost);
+      });
 
       return deferred;
 
     }
 
-    function messageHandler(event) {
-        
-      if (event.origin != gadget.msghost) return;
+    var timerId = null;
+    var cleanedUp = false;
 
-      var message = event.data;
+    const _messageHandler = function (event) {
 
-      if (typeof message == 'string') {
+    /**
+      * Per-request response listener.
+      * This only resolves the Deferred for the matching callback id.
+      */
 
-        try {
+      if (!isTrustedEvent(event)) return;
 
-          message = JSON.parse(message);
+      let parsed = parseMessageData(event.data);
 
-        }
+      if (!parsed) return;
 
-        catch (e) {
+      // The callback id ties this response to the original request.
+      if (parsed.callback === msgid) {
 
-          console.log('Cannot parse message from OU Campus app : ', message);
+        cleanup();
 
-          return;
-
-        }
+        deferred.resolve(parsed.payload);
 
       }
 
-      if (message.callback) return; // the message listener in sendMessageToTop will handle this message
+    };
 
-      if (message.name == 'configuration') gadget.setConfig(message.payload);
+    function cleanup() {
 
-      $(gadget).trigger(message.name, message.payload);
+    /**
+     * Remove listener + clear timeout.
+     * Guarded so it’s safe to call multiple times.
+     */
+
+      if (cleanedUp) return;
+
+      cleanedUp = true;
+
+      if (timerId !== null) clearTimeout(timerId);
+
+      gadgetWindow.removeEventListener('message', _messageHandler, false);
 
     }
 
-    var gadget = {
+    // Attach listener BEFORE sending so we never miss a fast response.
+    gadgetWindow.addEventListener('message', _messageHandler, false);
 
-      ready : function (callback) {
+    // Timeout protection in case host never replies.
+    if (isFinite(timeoutMs) && timeoutMs > 0) {
 
-        var deferred = new $.Deferred();
+      timerId = setTimeout(() => {
 
-        if (this.isReady) {
+        cleanup();
+
+        deferred.reject({
+          code: 'timeout',
+          message: 'Timed out waiting for host response.',
+          name: name,
+          callback: msgid,
+          timeoutMs: timeoutMs,
+        });
+
+      }, timeoutMs);
+
+    }
+
+    try {
+
+      gadgetWindow.top.postMessage(JSON.stringify(message), gadget.msghost);
+
+    }
+
+    catch (e) {
+
+      cleanup();
+
+      deferred.reject(e);
+
+    }
+
+    return deferred;
+
+  }
+
+  function messageHandler(event) {
+
+  /**
+   * Global message listener for unsolicited host events (non-callback).
+   * Callback responses are handled by the per-request listener in sendMessageToTop().
+   *
+   * Host can broadcast events like:
+   *   { name: "file-changed", payload: {...} }
+   *
+   * Consumers can subscribe with:
+   *   $(gadget).on("file-changed", (e, payload) => { ... })
+   */
+
+    if (!isTrustedEvent(event)) return;
+
+    var message = parseMessageData(event.data);
+
+    if (!message) return;
+
+    // Callback responses should be handled by sendMessageToTop's listener.
+    if (message.callback) return;
+
+    // Event bus: forward as jQuery event on the gadget object.
+    $(gadget).trigger(message.name, message.payload);
+
+  }
+
+  let gadget = {
+
+    ready : function (callback) {
+
+    /**
+     * Resolve when gadget finished collecting initial data from URL + host env.
+     * - If already ready, resolves immediately.
+     * - Otherwise resolves when "ready" event is triggered.
+     *
+     * @param {Function} [callback]
+     * @returns {JQueryDeferred<void>}
+     */
+
+      var deferred = new $.Deferred();
+
+      if (this.isReady) {
+
+        callback && callback();
+
+        deferred.resolve();
+
+      }
+
+      else {
+
+        $(this).one('ready', function () {
 
           callback && callback();
 
           deferred.resolve();
 
-        }
+        });
 
-        else {
+      }
 
-          $(this).one('ready', function () {
+      return deferred;
 
-            callback && callback();
+    },
 
-            deferred.resolve();
+    get : function (propName) {
 
-          });
+    /**
+     * Get a property.
+     * Objects are deep-cloned to prevent outside code from mutating gadget state.
+     */
 
-        }
+      if (typeof this[propName] == 'object') return JSON.parse(JSON.stringify(this[propName]));
 
-        return deferred;
+      return this[propName];
 
-      },
+    },
 
-      get : function (propName) { // Get the value of a property of the gadget.
-            
-        if (typeof this[propName] == 'object') return JSON.parse(JSON.stringify(this[propName]));
+    set : function (arg0, arg1) {
 
-        else return this[propName];
+    /**
+     * Set one or many properties.
+     * Supports:
+     *   gadget.set("favoriteColor", "blue")
+     *   gadget.set({ favoriteColor: "blue", favoriteFlavor: "vanilla" })
+     */
 
-      },
+      if (typeof arg0 == 'string') this[arg0] = arg1;
 
-      set : function (arg0, arg1) {
-
-        // Set a property of the gadget. You can pass either a single property name and value
-        // as two arguments, e.g.:
-        //     gadget.set('favoriteColor', 'blue');
-        // or several properties in a plain object, e.g.:
-        //     gadget.set({ favoriteColor: 'blue', favoriteFlavor: 'vanilla' });
-
-        if (typeof arg0 == 'string') this[arg0] = arg1;
-
-        else for (var key in arg0) if (arg0.hasOwnProperty(key)) this[key] = arg0[key];
+      if (typeof arg0 == 'object') for (var key in arg0) if (Object.prototype.hasOwnProperty.call(arg0, key)) this[key] = arg0[key];
   
-      },
+    },
 
-      resizeGadget : function (height) {
+    resize : function (height) {
 
-        if (gadget.place != 'sidebar') return;
+    /**
+     * Only meaningful in sidebar placement; asks host to resize container.
+     * No-op if not in sidebar.
+     *
+     * @param {number} height
+     * @returns {JQueryDeferred<any>|undefined}
+     */
 
-        if (height == 'max') height = 300;
+      if (this.place != 'sidebar') return;
 
-        $(window.frameElement.parentElement).height(height || document.body.offsetHeight);
+      let config = {
 
-      },
+        gid : this.gid,
+        place : this.place,
+        height : height,
 
-      getConfig : function (propName) {
+      };
 
-        // Same as the `get` method, but returns a subproperty of the gadget's `config`
-        // property, which is set by the `fetch` method.
+      return sendMessageToTop('set-gadget-height', config);
 
-        if (typeof this.config[propName] == 'object') return JSON.parse(JSON.stringify(this.config[propName]));
+    },
 
-        else return this.config[propName];
+    collectData : function () {
 
-      },
+    /**
+     * Collect URL params + host-provided environment and store them on gadget.
+     */
 
-      setConfig : function (arg0, arg1) {
+      let urlData = this.getUrlData();
 
-        // Same as the `set` method, but sets a subproperty of the gadget's `config` property.
+      this.set(urlData);
 
-        if (typeof arg0 == 'string') this.config[arg0] = arg1;
+      return this.getEnvironment()
 
-        else for (var key in arg0) if (arg0.hasOwnProperty(key)) this.config[key] = arg0[key];
+        .then(data => {
 
-      },
+          if (data) this.set(data);
 
-      collectUrlData : function () {
-
-      },
-
-      fetch : function () {
-
-        // A convenience method to get the gadget's configuration as stored in the OU Campus
-        // database by calling the /gadgets/view API. On a successful API call, the method
-        // saves the config into the Gadget instance; you can then use `getConfig` to get
-        // specific properties of the configuration.
-        //
-        // The method returns a jQuery Deferred object, so you can use methods like `then` to
-        // do stuff once the API call has received a response.
-
-        var self = this;
-        var endpoint = self.apihost + '/gadgets/view';
-        var params = {
-
-          authorization_token : self.token,
-          account : self.account,
-          gadget : self.gid
-
-        };
-
-        return $.ajax({
-
-          type    : 'GET',
-          url     : endpoint, 
-          data    : params, 
-          success : function (data) {
-
-            self.config = {};
-
-            for (var key in data.config) if (data.config.hasOwnProperty(key)) self.config[key] = data.config[key].value;
-
-          },
-          error : function (xhr, status, error) {
-
-            console.log('Fetch error:', status, error);
-
-            displayConnectionError();
-
-          },
+          return {...urlData, ...data};
 
         });
 
-      },
+    },
 
-      save : function (arg0, arg1) {
+    getUrlData : function () {
 
-        // A convenience method to set one or more properties of the gadget's configuration
-        // back to the OU Campus database by calling /gadgets/configure.
-        //
-        // The method returns a jQuery Deferred object, so you can use methods like `then`
-        // to do stuff once the API call has received a response.
+    /**
+     * Parse URL into a plain object.
+     *
+     * NOTE:
+     * - `.at(-2)` requires modern JS. If you need older compatibility,
+     *   replace with `segments[segments.length - 2]`.
+     *
+     * @returns {object}
+     */
 
-        if (arg0) this.setConfig(arg0, arg1);
+      let data = {};
 
+      let url = new URL(location.href);
 
-        var self = this;
-        var endpoint = self.apihost + '/gadgets/configure';
-        var params = self.config;
+      let params = url.searchParams;
 
-        params.authorization_token = self.token;
-        params.account = self.account;
-        params.gadget = self.gid;
+      // Base URL without query params
+      data.url = `${url.origin}${url.pathname}`;
 
-        return $.ajax({
+      // Gadget name inferred from pathname: /some/path/<name>/<file-or-end>
+      data.name = url.pathname.split('/').at(-2);
 
-          type    : 'POST',
-          url     : endpoint, 
-          data    : params, 
-          success : function (data) {},
-          error : function (xhr, status, error) { console.log('Save error:', status, error) },
+      // Copy all query parameters into the data object
+      for (let [key, value] of params.entries()) data[key] = value;
 
-        });
+      return data;
 
-      },
+    },
 
-      // for backward compatibility with pre-1.0.4 versions of gadgetlib.js
-      //_sendMessageToTop : sendMessageToTop,
+    // Reload the iframe.
+    reload : () => gadgetWindow.location.reload(),
 
-      oucGetCurrentFileInfo : () => sendMessageToTop('get-current-file-info'),
+    /**
+     * Host request helpers.
+     * These all return Deferreds resolved with host payloads (or rejected on timeout/error).
+     */
 
-      oucGetCurrentLocation : () => sendMessageToTop('get-location'),
+    getEnvironment : () => sendMessageToTop('get-environment')
 
-      oucGetSourceContent : () => sendMessageToTop('get-source-content'),
+      .then(data => data !== 'Unrecognized message.' ? data : null),
 
-      oucGetWYSIWYGContent : () => sendMessageToTop('get-wysiwyg-content'),
+    getFileInfo : () => sendMessageToTop('get-current-file-info'),
 
-      oucGetWYSIWYGSelection : () => sendMessageToTop('get-wysiwyg-selection'),   
+    getLocation : () => sendMessageToTop('get-location'),
 
-      oucInsertAtCursor : (content) => sendMessageToTop('insert-at-cursor', content),
+    getSourceContent : () => sendMessageToTop('get-source-content'),
 
-      oucRefreshLocation : () => sendMessageToTop('refresh-location'),
+    getWysiwygContent : () => sendMessageToTop('get-wysiwyg-content'),
 
-      oucSetCurrentLocation : (route) => sendMessageToTop('set-location', route),
+    getSelection : () => sendMessageToTop('get-wysiwyg-selection'),   
 
-    };
-    
-    for (var method in gadget) gadget[method] = gadget[method].bind(gadget); // bind all methods
-    
-    gadget.set(getDataFromUrl());
+    insertAtCursor : (content) => sendMessageToTop('insert-at-cursor', content),
 
-    getEnvironment()
+    refreshLocation : () => sendMessageToTop('refresh-location'),
 
-      .then(response => {
+    setLocation : (route) => sendMessageToTop('set-location', route),
 
-        if (response != 'Unrecognized message.') gadget.set(response);
+  };
 
-        gadget.isReady = true;
+  // Bind methods so `this` is stable even when passing references around.
+  for (let method in gadget) gadget[method] = gadget[method].bind(gadget);
 
-        $(gadget).trigger('ready');
+  /**
+   * Initialize gadget:
+   * - Collect URL data immediately
+   * - Ask host for environment
+   * - Mark isReady and emit "ready" either way so consumer code can proceed
+   */
+  gadget.collectData()
 
-      });
-    
-    window.addEventListener('message', messageHandler, false);
-    
-    // make the gadget object available as a global variable
-    window.gadget = gadget;
-    
-})();
+    .then(data => {
+
+      console.log(`[${gadget.name}][${gadget.gid}] is ready : `, data)
+
+      gadget.isReady = true;
+
+      $(gadget).trigger('ready');
+
+    })
+
+    .fail(error => {
+
+      console.warn(`[${gadget.name}][${gadget.gid}] host env unavailable; continuing without env.`, error);
+
+      gadget.isReady = true;
+
+      $(gadget).trigger('ready');
+
+    });
+
+  /**
+   * Global listener for host "event" messages (non-callback).
+   * Note: per-request listeners are created inside sendMessageToTop().
+   */
+  gadgetWindow.addEventListener('message', messageHandler, false);
+
+  // Expose globally for consumers.
+  gadgetWindow.gadget = gadget;
+
+})(window);

@@ -1,98 +1,159 @@
 /**
+ * cms-api.js
+ *
  * @author Louis Vulpes	
- * @copyright Copyright 2024-2025 Missouri State University
+ * @copyright Missouri State University 2024-2026
  */
 
-/**
- * - **name** (String) – Name of the gadget; this is only used for logging.
- *
- * @param {Object} config Configuration object.
- */
+
 class CmsApi {
 
-  constructor(config = {}) {
+/**
+ * CmsApi
+ * Thin wrapper around the OU Campus CMS API using jQuery.ajax.
+ *
+ * Assumes a global `gadget` object is available (token, apihost, account, site, etc).
+ * Also assumes jQuery `$` is available.
+ */
 
-    this.logging = (config.logging !== undefined) ? config.logging : false;
-    this.name = config.name || ''; // gadget name
-    this.site = config.site || gadget.site || '';
+  constructor() {
 
+    // Identify the gadget instance (name or gid) and CMS context.
+    this.name = gadget.name || gadget.gid || '';
+    this.site = gadget.site || '';
+
+    // Base API host (defaults to OU's CMS host).
     this.apihost = gadget.apihost || 'https://a.cms.omniupdate.com';
+
+    // OU Campus account + skin are used to build the base admin URL.
     this.account = gadget.account || 'missouristate';
     this.skin = gadget.skin || 'oucampus';
+
+    // Hostbase appears to be a UI base route (OU Campus "11" interface deep link).
     this.hostbase = gadget.hostbase || `/11/#${this.skin}/${this.account}/${this.site}`;
+
+    // Helpful for logging / diagnostics.
     this.user = gadget.user || 'unknown user';
 
-    gadget.set('logging', this.logging);
   }
 
-  /**
-   * Make a GET request to the CMS API.
-   * @param {String} endpoint API endpoint.
-   * @param {Object} data Parameters for the API request.
-   * @returns {*} Response from the CMS API.
-   */
-  get(endpoint, data) {
 
-    return this.call('GET', endpoint, data);
+  get(endpoint, data, retries = 3) {
+
+  /**
+   * Convenience GET wrapper.
+   * @param {string} endpoint - API path (e.g. "/api/...").
+   * @param {object} data - Query params.
+   * @param {number} retries - Optional retry limit override.
+   */
+
+    let config = { method : 'GET', endpoint, data, retries };
+
+    return this.call(config);
 
   }
 
+
+  post(endpoint, data, retries = 3) {
+
   /**
-   * Make a POST request to the CMS API.
-   * @param {String} endpoint API endpoint.
-   * @param {Object} data Parameters for the API request.
-   * @returns {*} Response from the CMS API.
+   * Convenience POST wrapper.
+   * @param {string} endpoint - API path (e.g. "/api/...").
+   * @param {object} data - Body/query params (jQuery will form-encode).
+   * @param {number} retries - Optional retry limit override.
    */
-  post(endpoint, data) {
 
-    let config = {
+    let config = { method : 'POST', endpoint, data, retries };
 
-      method : 'POST',
-      endpoint : endpoint,
-      data : data,
+    return this.call(config);
+
+  }
+
+  call(config) {
+
+  /**
+   * Core request handler with retry + exponential backoff.
+   * @param {object} config
+   * @param {'GET'|'POST'} config.method
+   * @param {string} config.endpoint
+   * @param {object} [config.data]
+   * @param {number} [config.retries] - max retry attempts (default 3)
+   * @param {number} [config.delay] - base delay for backoff (default 1000ms)
+   * @returns {Promise<any>}
+   */
+
+    // If caller didn't set retries, default to 3.
+    let retries = config.retries ?? 3;
+
+    // Base delay for exponential backoff.
+    let delay = config.delay ?? 1000;
+
+    config.data = config.data || {};
+
+    // OU Campus commonly accepts the auth token in both header and params.
+    config.data.authorization_token = gadget.token;
+
+    const backoff = (attempt) => {
+
+    /**
+     * Exponential backoff with jitter:
+     * attempt 0 => ~delay
+     * attempt 1 => ~2*delay
+     * attempt 2 => ~4*delay
+     * capped at 15s
+     */
+
+      const base = delay * Math.pow(2, attempt);
+
+      const jitter = Math.floor(Math.random() * 250); 
+
+      return Math.min(base + jitter, 15_000);
 
     };
 
-    return this.call('POST', endpoint, data);
-
-    //return this.retriableCall(config);
-
-  }
-
-  retriableCall(config, retries = 3, delay = 1000) {
-
-    let defaults = {};
-
-    if (typeof gadget !== 'undefined') defaults.authorization_token = gadget.token;
-
-    let retryCodes = ['TIMEOUT']; // 'UNKNOWN_ERROR'
-
-    let failCodes = ['SESSION_NOT_FOUND'];
+    // Error codes safe to retry.
+    // NOTE: Only retries on "TIMEOUT" currently.
+    let retryCodes = ['TIMEOUT'];
 
     return new Promise((resolve, reject) => {
 
       function ring(count) {
 
+      /**
+       * Attempts the request. If retriable failure and under max attempts,
+       * it schedules another attempt with backoff delay.
+       *
+       * @param {number} count - attempt number starting at 0
+       */
+
         $.ajax({
 
           type : config.method,
-          url : gadget.apihost + config.endpoint,
-          data : {...defaults, ...config.data},
+          url : `${gadget.apihost}${config.endpoint}`,
+
+          // $.param(config.data, true) uses "traditional" param serialization when true.
+          // This is important when sending arrays / nested objects.
+          data : $.param(config.data, true),
+
+          // Token also sent as a header; typical OU Campus pattern.
+          headers : { 'X-Auth-Token' : gadget.token },
 
         })
 
+          // On success, resolve the promise with the AJAX response.
           .done(resolve)
 
-          //.done(result => resolve(result))
-
+          // On failure, inspect response and decide whether to retry.
           .fail((jqXHR, status, error) => {
 
             let response = jqXHR.responseJSON;
 
+            let retriable = false;
+
+            // Styled logging to make these errors easy to spot in devtools.
             let style = 'color: firebrick; font-weight: bold;';
 
             console.log('%c====== CMS API ERROR ======', style);
-            //console.log('%c    Gadget : ', style, this.name);
             console.log('%c    Method : ', style, config.method);
             console.log('%c  Endpoint : ', style, config.endpoint);
             console.log('%cParameters : ', style, config.data);
@@ -101,26 +162,25 @@ class CmsApi {
 
             else {
 
-              console.log('%c      Code : ', style, jqXHR.responseJSON.code);
-              console.log('%c   Message : ', style, jqXHR.responseJSON.error);
+              console.log('%c      Code : ', style, response.code);
+              console.log('%c   Message : ', style, response.error);
 
-			}
+              // Decide whether this error is retriable based on code tokens.
+              retriable = retryCodes.some(token => typeof response.code === 'string' && response.code.includes(token));
 
-            let retriable = retryCodes.some(msg => response.code.includes(msg));
 
-            if (response.code === 'SESSION_NOT_FOUND') {
+              // Special-case: session invalid or missing.
+              // Replace page content with a simple recovery instruction.
+              if (response.code === 'SESSION_NOT_FOUND') {
 
-              retriable = false;
+                document.body.innerHTML = '<h3>Failed to connect</h3><p>Reload the page.</p>';
 
-              document.querySelector('body').innerHTML = '<h3>Failed to connect</h3><p>Reload the page.</p>';
-
-            }
-
-            if (retriable && count < retries) {
-
-              setTimeout(() => ring(count + 1), delay);
+              }
 
             }
+
+            // Retry if allowed and under retry count; otherwise reject.
+            if (retriable && count < retries) setTimeout(() => ring(count + 1), backoff(count));
 
             else reject({ jqXHR, status, error });
 
@@ -128,70 +188,15 @@ class CmsApi {
 
       }
 
-      ring(0); // Start the first attempt
+      ring(0); // Start the first attempt immediately.
 
     });
 
   }
 
-  call(method, endpoint, data) {
-
-    let defaults = {};
-
-    if (typeof gadget !== 'undefined') defaults.authorization_token = gadget.token;
-
-    return $.ajax({
-
-      type : method,
-      url : this.apihost + endpoint,
-      data : {...defaults, ...data},
-
-    })
-
-      .done(r => r)
-
-      .fail((jqXHR, status, error) => {
-
-        let response = jqXHR.responseJSON;
-
-        let style = 'color: firebrick; font-weight: bold;';
-
-        console.log('%c====== CMS API ERROR ======', style);
-        console.log('%c    Gadget : ', style, this.name);
-        console.log('%c    Method : ', style, method);
-        console.log('%c  Endpoint : ', style, endpoint);
-        console.log('%cParameters : ', style, data);
-
-        if (!response) console.log('%cNo response JSON provided by the error.', style);
-
-        else {
-
-          console.log('%c      Code : ', style, jqXHR.responseJSON.code);
-          console.log('%c   Message : ', style, jqXHR.responseJSON.error);
-
-          if (response.code === 'SESSION_NOT_FOUND') {
-
-            let config = {
-
-              title : 'Session Expired',
-              body : 'Error: Session expired. Refresh the page.',
-              color : 'red',
-
-            };
-
-            document.querySelector('body').innerHTML = '<h3>Failed to connect</h3><p>Reload the page.</p>';
-
-          }
-
-        }
-
-      });
-
-  }
-
   // ========== ENDPOINTS ==========
 
-  // ========== /assets ==========
+  // ========== [/assets] ==========
 
   /**
    * Calls the [/assets/list] endpoint
@@ -213,7 +218,7 @@ class CmsApi {
     return this.get('/assets/view', config);
   }
 
-  // ========== /components ==========
+  // ========== [/components] ==========
 
   /**
    * Calls the [/rs/components/dependents/{type}/{name}] endpoint
@@ -241,10 +246,12 @@ class CmsApi {
    * Get components.
    */
   components_list(config = {}) {
+    if (!config.type) config.type = 'generic';
+    if (config.disabled === undefined) config.disabled = false;
     return this.get('/rs/components', config);
   }
 
-  // ========== /directories ==========
+  // ========== [/directories] ==========
 
   /**
    * Calls the [/directories/settings] endpoint
@@ -268,8 +275,8 @@ class CmsApi {
    */
   files_backup(config = {}) {
     if (!config.site) config.site = this.site;
-    if (!config.message) config.message = 'Backup via CMS API'
-    return this.get('/files/backup', config);
+    if (!config.message) config.message = 'Backup via CMS API';
+    return this.post('/files/backup', config);
   }
 
   /**
@@ -328,9 +335,9 @@ class CmsApi {
    *
    * Copy a file to a new destination. (Level 9+ or level 8+ with group access to the source and destination.)
    */
-  files_copy(config = {}) {
+  files_copy(config = {}, retries = 0) {
     if (!config.site) config.site = this.site;
-    return this.get('/files/copy', config);
+    return this.post('/files/copy', config, retries);
   }
 
   /**
@@ -390,7 +397,7 @@ class CmsApi {
    */
   files_dm_revert(config = {}) {
     if (!config.site) config.site = this.site;
-    return this.get('/files/dm_revert', config);
+    return this.post('/files/dm_revert', config);
   }
 
   /**
@@ -445,7 +452,7 @@ class CmsApi {
    */
   files_move(config = {}) {
     if (!config.site) config.site = this.site;
-    return this.get('/files/move', config);
+    return this.post('/files/move', config);
   }
 
   /**
@@ -455,8 +462,18 @@ class CmsApi {
    */
   files_multipublish(config = {}) {
     if (!config.site) config.site = this.site;
-    if (!config.target) config.target = 'Production';
-    return this.get('/files/multipublish', config);
+    if (!config.target) config.target = config.site;
+
+    let callConfig = {
+
+      method : 'POST',
+      endpoint : '/files/multipublish',
+      data : config,
+
+    }
+
+    return this.call(callConfig);
+
   }
 
   /**
@@ -588,7 +605,7 @@ class CmsApi {
   files_upload(config = {}) {
     if (!config.site) config.site = this.site;
     if (config.overwrite === undefined) config.overwrite = true;
-    return this.get('/files/upload', config);
+    return this.post('/files/upload', config);
   }
 
   /**
@@ -697,7 +714,7 @@ class CmsApi {
    */
   sites_findreplace(config = {}) {
     if (!config.site) config.site = this.site;
-    return this.get('/sites/findreplace', config);
+    return this.post('/sites/findreplace', config);
   }
 
   /**
@@ -727,7 +744,7 @@ class CmsApi {
    */
   sites_publish(config = {}) {
     if (!config.site) config.site = this.site;
-    return this.get('/sites/publish', config);
+    return this.post('/sites/publish', config);
   }
 
   /**
@@ -748,7 +765,7 @@ class CmsApi {
    */
   sites_revert(config = {}) {
     if (!config.site) config.site = this.site;
-    return this.get('/sites/revert', config);
+    return this.post('/sites/revert', config);
   }
 
   /**
@@ -811,7 +828,7 @@ class CmsApi {
    * Deletes one or more users in an account. (Level 10+ only)
    */
   users_delete(config = {}) {
-    return this.get('/users/delete', config);
+    return this.post('/users/delete', config);
   }
 
   /**

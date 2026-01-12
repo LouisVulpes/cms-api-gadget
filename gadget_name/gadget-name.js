@@ -1,6 +1,11 @@
 /**
  * gadget-name.js
+ * 
+ * @author [author]
+ * @copyright [copyright]
  */
+ 
+ /** -------- [VARIABLES] -------- **/
 
 var api; // {}
 
@@ -8,11 +13,10 @@ var current; // {}
 
 var groups, users; // {}
 
+/** -------- [INIT] -------- **/
+
 $(() => gadget.ready(init));
 
-/**
- * Runs on gadget load.
- */
 function init() {
 
   api = new CmsApi();
@@ -27,7 +31,7 @@ function init() {
 
 }
 
-/** -------- [###] -------- **/
+/** -------- [LOAD] -------- **/
 
 function loadGui(view) {
 
