@@ -1,12 +1,21 @@
 /**
  * gadget-common.js
  * 
+ * Shared helper utilities for OmniUpdate gadgets:
+ * - UI helpers (alerts, modals, spinners, breadcrumb/list builders)
+ * - CMS data fetchers (assets, binaries, links, locked files, sites/users)
+ * - Settings helpers (directory/file access/extensions, publish/unpublish)
+ *
  * @author Louis Vulpes
  * @copyright Missouri State University 2024-2026
  **/
 
 /** ======== VARIABLES ======== **/
 
+/**
+ * Sites that are considered development / template sites.
+ * Used to optionally exclude these from site lists and reports.
+ */
 const DEV_SITES = ['templates', 'webincludes', 'zz-CMS-Dev', 'zz-Omni-Dev', 'zz-sitetemplate-sgf'];
 
 
@@ -16,15 +25,36 @@ const DEV_SITES = ['templates', 'webincludes', 'zz-CMS-Dev', 'zz-Omni-Dev', 'zz-
 
 async function addAlert(message, type = '', duration = 5000) {
 
+/**
+ * Adds a Bootstrap alert into #alerts and optionally auto-dismisses it.
+ * @param {string} message - Alert text (currently inserted via innerHTML in generateAlert).
+ * @param {string} type - Bootstrap contextual type (primary|secondary|success|warning|danger|info|light|dark).
+ * @param {number} duration - ms before fade-out. Use 0 or <0 to keep it.
+ */
+
+  // Create the DOM node for the alert
   let alert = generateAlert(message, type);
 
+  // Add it to the alerts container
   getElement('#alerts').appendChild(alert);
 
+  // Auto-remove after duration (fadeOutElement handles transition + removal)
   if (duration > 0) setTimeout(() => fadeOutElement(alert), duration);
 
 }
 
 async function addModal(title, body, confirmText, denyText) {
+
+/**
+ * Adds a confirm modal into #modals.
+ *
+ * NOTE: This function only appends the modal element; it does not show it.
+ *
+ * @param {string} title
+ * @param {string} body - HTML string inserted into modal body
+ * @param {string} confirmText
+ * @param {string} denyText
+ */
 
   let modal = generateConfirmModal(title, body, confirmText, denyText);
 
@@ -34,29 +64,31 @@ async function addModal(title, body, confirmText, denyText) {
 
 /** ------ [ANIMATE] ------ **/
 
-function fadeOutElement(element, duration = 50) {
+function fadeOutElement(element, ms = 300) {
 
-  let opacity = 1;
+/**
+ * Fades out an element using CSS transitions, then removes it from the DOM.
+ *
+ * @param {HTMLElement} element
+ * @param {number} ms - Duration (milliseconds) for the opacity transition.
+ */
 
-  const timer = setInterval(() => {
+  // Apply a transition on opacity
+  element.style.transition = `opacity ${ms}ms ease`;
 
-    if (opacity > 0) {
+  // Trigger the transition
+  element.style.opacity = '0';
 
-      opacity -= 0.1;
+  // Remove the element once the transition finishes
+  const onEnd = () => {
 
-      element.style.opacity = opacity;
+    element.removeEventListener('transitionend', onEnd);
 
-    }
+    element.remove();
 
-    else {
+  };
 
-      clearInterval(timer);
-
-      element.remove();
-
-    }
-
-  }, duration);
+  element.addEventListener('transitionend', onEnd);
 
 }
 
@@ -64,96 +96,79 @@ function fadeOutElement(element, duration = 50) {
 
 async function buildList(config, container , gui = getElement('#list-gui')) {
 
+/**
+ * Builds a list UI into `container`, optionally showing/hiding a GUI bar element.
+ *
+ * If config.list is NOT provided:
+ *  - It loads a list using config.type and config.page (when required)
+ *  - Then it continues to the render step
+ *
+ * If config.list IS provided:
+ *  - It renders either the empty_text or the generated list
+ *
+ * @param {Object} config
+ * @param {HTMLElement} container - DOM element to receive the generated list
+ * @param {HTMLElement|null} gui - Optional GUI element that should be shown when list is ready
+ *
+ * config.type: 'asset' | 'binary' | 'link' | 'locked' | 'subscriber' | ''
+ * config.list: array of items (if preloaded)
+ * config.page: {site, path} (required for asset/binary/link/subscriber)
+ * config.edit_mode: boolean (passed to generateList to enable checkboxes)
+ * config.empty_text: string to display when list is empty
+ */
+
+  // Show a spinner while fetching/building
   let spinner = generateSpinner(true);
 
   if (container.innerHTML !== spinner) container.innerHTML = spinner;
 
-  config.type = config.type || ''; // asset | binary | link | locked | subscriber
-  //config.list []
-  //config.page {}
-  config.empty_text = config.empty_text || 'None found';
-  config.edit_mode = config.edit_mode || false; // edit mode
+  // Default values + merge caller-provided config
+  config = {
 
+    type: '',
+    empty_text: 'None found',
+    edit_mode: false,
+    ...config,
 
+  };
+
+  /**
+   * Loader map:
+   * Each loader returns { list, empty } where:
+   *  - list: array of items to display
+   *  - empty: empty-state message for that item type
+   */
+  const loaders = {
+    asset: async () => ({ list: await getAssets(config.page), empty: 'No assets found' }),
+    binary: async () => ({ list: await getBinaryFiles(config.page), empty: 'No binary files found' }),
+    link: async () => ({ list: await getPageContentLinks(config.page), empty: 'No content links found' }),
+    locked: async () => ({ list: await getLockedFiles(), empty: 'No locked files found' }),
+    subscriber: async () => ({ list: await getSubscribers(config.page), empty: 'No subscribers found' }),
+  };
+
+  // If caller didn't supply a list, fetch it based on config.type
   if (!config.list) {
+    const loader = loaders[config.type];
+    if (!loader) return; // Nothing to do if unknown type
 
-    if (config.type === 'asset' && config.page) return getAssets(config.page)
+    // Some loaders require a page object; bail out if missing to avoid API errors
+    if (['asset','binary','link','subscriber'].includes(config.type) && !config.page) return;
 
-      .then(assets => {
-
-        config.list = assets || [];
-
-        config.empty_text = 'No assets found';
-
-        return buildList(config, container, gui);
-
-      });
-
-    if (config.type === 'binary' && config.page) return getBinaryFiles(config.page)
-
-      .then(files => {
-
-        config.list = files || [];
-
-        config.empty_text = 'No binary files found';
-
-        return buildList(config, container, gui);
-
-      });
-
-    if (config.type === 'link' && config.page) return getPageContentLinks(config.page)
-
-      .then(links => {
-
-        config.list = links || [];
-
-        config.empty_text = 'No content links found';
-
-        return buildList(config, container, gui);
-
-      });
-
-    if (config.type === 'locked') return getLockedFiles()
-
-      .then(files => {
-
-        config.list = files || [];
-
-        config.empty_text = 'No locked files found';
-
-        return buildList(config, container, gui);
-
-      });
-
-    if (config.type === 'subscriber' && config.page) return getSubscribers(config.page)
-
-      .then(subscribers => {
-
-        config.list = subscribers || [];
-
-        config.empty_text = 'No subscribers found';
-
-        return buildList(config, container, gui);
-
-      });
-
-    return;
-
+    const { list, empty } = await loader();
+    config.list = list || [];
+    config.empty_text = empty;
   }
 
-  else { // if (config.list)
+  // Render empty-state message or clear the container for list insertion
+  container.innerHTML = config.list.length
+    ? ''
+    : `<div class="text-secondary px-1 py-2">${config.empty_text}</div>`;
 
-    container.innerHTML = (config.list.length === 0) ? `<div class="text-secondary px-1 py-2">${config.empty_text}</div>` : '';
+  // Ensure the GUI controls are visible once list content is ready
+  if (gui) gui.classList.remove('d-none');
 
-    if (gui) gui.classList.remove('d-none');
-
-    if (container.childNodes.length === 0) container.appendChild(generateList(config.list, config.edit_mode));
-
-    return;
-
-  }
-
-  return;
+  // Only add list if container is still empty (prevents double-appends)
+  if (container.childNodes.length === 0) container.appendChild(generateList(config.list, config.edit_mode));
 
 }
 
@@ -161,14 +176,20 @@ async function buildList(config, container , gui = getElement('#list-gui')) {
 
 async function collectDirectoryInfo(directory) {
 
+/**
+ * Enriches a directory object with:
+ * - directories[]: immediate child directories (from files_list)
+ * - dm_tag + http_path: directory metadata from the listing result
+ *
+ * @param {Object} directory - {site, path, ...}
+ * @returns {Promise<Object>} same directory object with added properties
+ */
+
   return api.files_list({site : directory.site, path : directory.path})
 
     .then(data => {
 
-      log('directory files_list', data);
-
-      //directory.entries = data.entries;
-
+      // Convert API entries into a simplified directories list
       directory.directories = data.entries
 
         .filter(entry => entry.is_directory) // or (entry.file_type === 'dir')
@@ -186,6 +207,7 @@ async function collectDirectoryInfo(directory) {
 
       //directory.files = [];
 
+      // Directory-level metadata
       directory.dm_tag = data.dm_tag;
 
       directory.http_path = data.http_path;
@@ -197,6 +219,13 @@ async function collectDirectoryInfo(directory) {
 }
 
 async function collectDirectorySettings(directory) {
+
+/**
+ * Loads directory settings and copies key fields onto the directory object.
+ *
+ * @param {Object} directory - {site, path, ...}
+ * @returns {Promise<Object>}
+ */
 
   return api.directories_settings({site : directory.site, path : directory.path})
 
@@ -217,6 +246,14 @@ async function collectDirectorySettings(directory) {
 
 async function collectPageInfo(page) {
 
+/**
+ * Loads page listing info from files_list and attaches:
+ * - dm_tag, no_publish, locked_by (from first entry)
+ *
+ * Assumes the API returns the page as data.entries[0].
+ * @param {Object} page - {site, path, ...}
+ */
+
 return api.files_list({site : page.site, path : page.path})
 
     .then(data => {
@@ -233,17 +270,28 @@ return api.files_list({site : page.site, path : page.path})
 
 async function collectPageProperties(page) {
 
+/**
+ * Loads page properties (title, meta tags, parameters, tags) and attaches them to `page`.
+ *
+ * @param {Object} page - {site, path, ...}
+ */
+
 return api.files_properties({site : page.site, path : page.path})
 
     .then(data => {
 
-      log('page properties', data);
-
+      // Core metadata
       page.title = data.title;
+
+      // Meta tags (assumes both exist)
       page.description = data.meta_tags.find(item => item.name === 'Description').content;
       page.keywords = data.meta_tags.find(item => item.name === 'Keywords').content;
+
+      // Parameters (assumes both exist)
       page.heading = data.parameters.find(item => item.name === 'heading').value;
       page.breadcrumb = data.parameters.find(item => item.name === 'breadcrumb').value;
+
+      // Keep full lists too
       page.parameters = data.parameters;
       page.meta_tags = data.meta_tags;
       page.tags = data.tags;
@@ -255,6 +303,11 @@ return api.files_properties({site : page.site, path : page.path})
 }
 
 async function collectFileSource(file) {
+/**
+ * Fetches file source and attaches it as `file.source`.
+*
+ * @param {Object} file - {site, path, ...}
+ */
 
   return api.files_source({site : file.site, path : file.path})
 
@@ -270,17 +323,27 @@ async function collectFileSource(file) {
 
 async function collectFilesSources(files) {
 
-  let promises = [];
+/**
+ * Batch version of collectFileSource() for an array.
+ * Mutates the objects in-place by adding .source.
+ *
+ * @param {Array<Object>} files
+ * @returns {Promise<Array<Object>>}
+ */
 
-  for (let file of files) promises.push(collectFileSource(file));
+  await Promise.all(files.map(file => collectFileSource(file)));
 
-  return Promise.all(promises)
-
-    .then(results => files);
+  return files; // Same objects now enriched with .source
 
 }
 
 async function collectTargets(view) {
+
+/**
+ * Loads publishing targets for the site and stores them on the view:
+ * - view.targets: all targets
+ * - view.staging_target: first target containing "-staging"
+ */
 
   return getTargets(view.site)
 
@@ -288,6 +351,7 @@ async function collectTargets(view) {
 
       view.targets = targets;
 
+      // Identify a staging target by naming convention
       for (let target of targets) if (target.includes('-staging')) view.staging_target = target;
 
       return view;
@@ -299,6 +363,19 @@ async function collectTargets(view) {
 /** ------ [CREATE] ------ **/
 
 async function createDirectory(name, site, path,  config = {}) {
+
+/**
+ * Creates a new folder in the CMS (staging).
+ *
+ * Safety checks:
+ * - name must be non-empty
+ * - path must not include '.' (prevents treating it like a file path)
+ *
+ * @param {string} name - folder name
+ * @param {string} site - site name
+ * @param {string} path - parent directory path
+ * @param {Object} config - currently unused placeholder for future options
+ */
 
   if (name === '' || path.includes('.')) return;
 
@@ -319,6 +396,12 @@ async function createDirectory(name, site, path,  config = {}) {
 
 function escapeDmTag (tag = '') {
 
+/**
+ * Escapes curly braces for DM tags so they can be used in some regex/string contexts.
+ *
+ * @param {string} tag
+ */
+
   return tag.replace(/\{/g, '\\{').replace(/\}/g, '\\}');
 
 }
@@ -326,6 +409,14 @@ function escapeDmTag (tag = '') {
 /** ------ [FIND] ------ **/
 
 async function findText(siteName, paths = ['/'], text) {
+
+/**
+ * Runs an Omni "find" job (find/replace with replace=false), then polls for results.
+ *
+ * @param {string} siteName
+ * @param {Array<string>} paths - directories to search
+ * @param {string} text - search string
+ */
 
   return api.sites_findreplace({
 
@@ -357,6 +448,10 @@ async function findText(siteName, paths = ['/'], text) {
 
 function generateAlert(message, type = '') {
 
+/**
+ * Creates an alert element.
+ */
+
   let container = document.createElement('div');
 
   let closeButton = `<button type="button" class="close" data-dismiss="alert" aria-label="Close"><span aria-hidden="true">&times;</span></button>`;
@@ -373,6 +468,13 @@ function generateAlert(message, type = '') {
 
 function generateBreadcrumb(view) {
 
+/**
+ * Builds a breadcrumb UI for the current `view` object.
+ * view.type drives icon choice and trailing tooltip content.
+ *
+ * @param {Object} view - {site, path, type, filetype?}
+ */
+
   let container = document.createElement('div');
 
   //container.dataset.toggle = 'tooltip';
@@ -384,6 +486,7 @@ function generateBreadcrumb(view) {
 
   container.appendChild(breadcrumb);
 
+  // Select an icon based on view type + filetype
   let iconName = 
 
     (view.type === 'dashboard') ? 'home' :
@@ -402,25 +505,30 @@ function generateBreadcrumb(view) {
 
     'location_on';
 
+  // Tooltip shown on final crumb
   let tooltip = `<span class='material-symbols-outlined filled mr-1'>${iconName}</span>Current ${view.type === 'other' ? 'location' : view.type}`;
 
+  // Leading icon + refresh link
   let icon = `<span class="material-symbols-outlined filled text-muted mr-1">${iconName}</span>`
 
   let refresh = `<a href="#" class="text-secondary mr-1" data-toggle="tooltip" title="Refresh" onclick="reloadGadget()"><span class="material-symbols-outlined">refresh</span></a>`;
 
   breadcrumb.innerHTML = `<li>${icon}${refresh}</li>`;
 
+  // Always start with site crumb
   breadcrumb.appendChild(generateCrumb(view.site, `/browse/staging`, view.path === '/'));
 
+  // If on dashboard, add a terminal "dashboard" crumb
   if (view.type === 'dashboard') breadcrumb.appendChild(generateCrumb('dashboard', ``, true));
 
+  // Split path into crumbs and build a clickable trail
   let crumbs = view.path.split('/');
 
   let trail = '';
 
   for (let crumb of crumbs) {
 
-    if (crumb.length === 0) continue;
+    if (crumb.length === 0) continue; // ignore empty segments
 
     trail += `/${crumb}`;
 
@@ -428,6 +536,7 @@ function generateBreadcrumb(view) {
 
     let isLast = crumb === crumbs[crumbs.length - 1];
 
+    // Only last crumb gets tooltip content
     breadcrumb.appendChild(generateCrumb(crumb, location, isLast, `${isLast ? tooltip : ''}`));
 
   }
@@ -438,6 +547,13 @@ function generateBreadcrumb(view) {
 
 function generateCSV(data) {
 
+/**
+ * Converts tabular data into a downloadable data URI CSV string.
+ * Replaces # because it can break fragment identifiers in data URIs.
+ *
+ * @param {Array<Array<any>>} data
+ */
+
   let content = 'data:text/csv;charset=utf-8,';
 
   for (let row of data) content += `${row.join()}\r\n`;
@@ -447,6 +563,12 @@ function generateCSV(data) {
 
 function generateCrumb(text, location = '', isLast = false, tooltip = '') {
 
+/**
+ * Creates a single breadcrumb item.
+ * - If not last: clickable, calls setLocation(location)
+ * - If last: rendered as plain text and marked active
+ */
+
   let container = document.createElement('li');
 
   container.classList.add('breadcrumb-item');
@@ -455,6 +577,7 @@ function generateCrumb(text, location = '', isLast = false, tooltip = '') {
 
   container.innerHTML = (!isLast) ? `<a href="#">${text}</a>` : `${text}`;
 
+  // Tooltip setup (Bootstrap)
   container.dataset.toggle = 'tooltip';
   container.dataset.html = true;
   container.title = tooltip;
@@ -467,8 +590,16 @@ function generateCrumb(text, location = '', isLast = false, tooltip = '') {
 
 function generatePageAccordion(pages = [], heading, checkboxes = false) {
 
+/**
+ * Builds an accordion for a list of pages.
+ * Uses Bootstrap collapse (button toggles listContainer).
+ *
+ * NOTE: [Deprecated]
+ */
+
   let container = document.createElement('div');
 
+  // Use heading for IDs; replace first whitespace run with dash
   let name = heading.replace(/\s+/, '-');
 
   container.id = `${name}-accordion`;
@@ -484,7 +615,8 @@ function generatePageAccordion(pages = [], heading, checkboxes = false) {
   listContainer.id = `${name}-collapse-list`;
   listContainer.classList.add('list-group', 'list-group-flush', 'collapse');
 
-  if (pages.length === 0) return container; // early return if no pages
+  // Early return if there’s nothing to add
+  if (pages.length === 0) return container;
 
   for (let page of pages) listContainer.appendChild(generatePageListItem(page, checkboxes));
 
@@ -494,16 +626,25 @@ function generatePageAccordion(pages = [], heading, checkboxes = false) {
 
 function generatePageListItem(page, checkbox = false) {
 
+/**
+ * Generates a single page list item linking to preview.
+ *
+ * NOTE: [Deprecated]
+ */
+
   const CMS_URL_PRE = `${gadget.apihost}/11/#${gadget.skin}/${gadget.account}`;
 
   let container = document.createElement('li');
 
   container.classList.add('list-group-item', 'list-group-item-action', 'd-flex', 'px-1');
   
+  // External-link icon (visual cue)
   let icon = `<span class="material-symbols-outlined text-info align-self-center ml-1">open_in_new</span>`;
 
+  // Optional checkbox (stores site/path for bulk actions)
   let input = (checkbox) ? `<input class="mr-1" data-site="${page.site}" data-path="${page.path}" value="${page.site},${page.path}" type="checkbox"/> ` : '';
 
+  // Link to preview
   let link = `<a class="text-reset flex-fill" href="${CMS_URL_PRE}/${page.site}/preview${page.path}" target="_blank"><span class="badge badge-pill badge-info">${page.site}</span><br>${page.path}</a>`;
 
   container.innerHTML = `${input}${link}${icon}`;
@@ -513,6 +654,11 @@ function generatePageListItem(page, checkbox = false) {
 }
 
 function generateList(list = [], checkboxes = false) {
+
+/**
+ * Builds a <ul> list-group container from a list of items.
+ * Returns undefined if list is empty.
+ */
 
   if (list.length === 0) return; // early return if empty list
 
@@ -528,16 +674,23 @@ function generateList(list = [], checkboxes = false) {
 
 function generateListItem(item, checkbox = false) {
 
+/**
+ * Generates one list-group item based on `item.type`.
+ * Supported types: '', 'asset', 'binary', 'page', 'link', 'user'
+ */
+
   const CMS_URL_PRE = `${gadget.apihost}/11/#${gadget.skin}/${gadget.account}`;
 
   let container = document.createElement('li');
 
   container.classList.add('list-group-item', 'list-group-item-action', 'd-flex', 'px-1', 'py-2');
 
+  // Accumulators for the pieces we render
   let icon = '';
   let input = '';
   let content = '';
 
+  // ----- Plain string items (type === '') -----
   if (item.type === '') {
 
     if (checkbox) input = `<input class="mr-1" value="${item}" type="checkbox"/>`;
@@ -546,11 +699,18 @@ function generateListItem(item, checkbox = false) {
 
   }
 
+  // ----- Asset entries -----
   if (item.type === 'asset') {
 
-    if (checkbox) input = `<input class="mr-1" data-site="${item.site}" data-path="${item.path}" data-name="${item.name}" data-type="asset" value="${item.site},${item.path}" type="checkbox"/>`;
-
-    if (checkbox) input = `<input class="mr-1" type="checkbox"/>`;
+    // Checkbox includes metadata for later bulk operations
+    if (checkbox) input = `<input
+      class="mr-1" 
+      data-site="${item.site}"
+      data-path="${item.path}"
+      data-name="${item.name}"
+      data-type="asset"
+      value="${item.site},${item.path}"
+      type="checkbox"/>`;
 
     icon = `<span class="material-symbols-outlined text-info align-self-center mr-2">summarize</span>`;
 
@@ -558,12 +718,14 @@ function generateListItem(item, checkbox = false) {
 
   }
 
+  // ----- Binary (non-PCF) files -----
   if (item.type === 'binary') {
 
     if (checkbox) input = `<input class="mr-1" data-site="${item.site}" data-path="${item.path}" data-type="binary" value="${item.site},${item.path}" type="checkbox"/>`;
 
     icon = `<span class="material-symbols-outlined text-info align-self-center mr-2">attachment</span>`;
 
+    // Show site + file extension badges
     let badge = `<span class="badge badge-pill badge-info mr-1">${item.site}</span>`;
 
     badge += `<span class="badge badge-pill badge-secondary mr-1">${item.path.split('.').pop()}</span>`;
@@ -571,6 +733,7 @@ function generateListItem(item, checkbox = false) {
     content = `<a class="text-reset flex-fill text-break" href="${CMS_URL_PRE}/${item.site}/preview${item.path}" target="_blank">${badge}<br>${item.path}</a>`;
   }
 
+  // ----- Page (PCF) entries -----
   if (item.type === 'page') {
 
     icon = `<span class="material-symbols-outlined text-info align-self-center mr-2">draft</span>`;
@@ -581,38 +744,45 @@ function generateListItem(item, checkbox = false) {
 
   }
 
+  // ----- Content links extracted from HTML -----
   if (item.type === 'link') {
 
     if (checkbox) input = `<input class="mr-1" data-link="${item.href}" data-link-text="${item.text}" data-type="link" value="${item.href}" type="checkbox"/>`;
 
     icon = `<span class="material-symbols-outlined text-info align-self-center mr-2">link</span>`;
-	  
+
+    // Display URL sans scheme by default
 	let displayUrl = item.href.replace(/^https?:\/\//, '');
 
     let badge = '';
 
+    // Protocol badges
     if (item.href.startsWith('https')) badge = `<span class="badge badge-pill badge-info mr-1">https</span>`;
 
     else if (item.href.startsWith('http')) badge = `<span class="badge badge-pill badge-warning mr-1">http</span>`;
 
+    // Fragment badge (e.g., #section)
 	if (item.href.includes('#')){
 
       badge += `<span class="badge badge-pill badge-dark mr-1">#${item.href.split('#').pop()}</span>`;
 		
 	}
-	
+
+    // Special-case: Omni "linked image" URLs
 	if (item.href.includes('a.cms.omniupdate.com')){
 
       badge = `<span class="badge badge-pill badge-danger mr-1">linked image</span>`;
 
 	}
 
+    // mailto badge
     if (item.href.startsWith('mailto:')) {
 
       badge = `<span class="badge badge-pill badge-info">mailto</span>`;
 
     }
 
+    // Heuristic: if href contains '@', treat it as an email address link
     if (item.href.includes('@')) {
 
       icon = `<span class="material-symbols-outlined text-info align-self-center mr-2">mail</span>`;
@@ -633,7 +803,7 @@ function generateListItem(item, checkbox = false) {
 
     }
 
-    // phone number regex
+    // Heuristic: phone number-ish ending => treat as phone link
     if (item.href.match(/([\d\s().-]{7,})$/)) {
 
       icon = `<span class="material-symbols-outlined text-info align-self-center mr-2">call</span>`;
@@ -654,6 +824,7 @@ function generateListItem(item, checkbox = false) {
 
     }
 
+    // Assemble link content block
     content = `<div class="flex-fill">`;
 
     content += `${badge}${(badge !== '') ? '<br>' : ''}`;
@@ -666,16 +837,19 @@ function generateListItem(item, checkbox = false) {
 
   }
 
+  // ----- User entries -----
   if (item.type === 'user') {
 
     if (checkbox) input = `<input class="mr-1" data-user="${item.username}" value="${item.username}" type="checkbox"/>`;
 
     icon = `<span class="material-symbols-outlined filled text-info align-self-center mr-2">person</span>`;
 
+    // Link to user setup page
     content = `<a class="text-reset flex-fill text-break" href="${CMS_URL_PRE}/${gadget.site}/setup/users/${item.username}" target="_blank">${item.reverse_name}<br><span class="badge badge-pill badge-info">${item.username}</span></a>`;
 
   }
 
+  // Final render for list item
   container.innerHTML = `${input}${icon}${content}`;
 
   return container;
@@ -683,6 +857,12 @@ function generateListItem(item, checkbox = false) {
 }
 
 function generateSpinner(asString = false) {
+
+/**
+ * Creates a Bootstrap spinner.
+ *
+ * @param {boolean} asString - return the DOM node or its outerHTML string
+ */
 
   let container = document.createElement('div');
 
@@ -696,9 +876,17 @@ function generateSpinner(asString = false) {
 
 function generateModal(title, body, closeText = 'Close') {
 
+/**
+ * Generic modal builder (close button only).
+ *
+ * @param {string} title
+ * @param {string} body - HTML string
+ * @param {string} closeText
+ */
+
   let container = document.createElement('div');
 
-  container.id = `${title.replace(' ', '-').toLowerCase()}-modal`;
+  container.id = `${title.replace(/ /g, '-').toLowerCase()}-modal`;
   container.classList.add('modal','fade')
   container.tabIndex = -1;
   container.setAttribute('role', 'dialog'); 
@@ -727,6 +915,11 @@ function generateModal(title, body, closeText = 'Close') {
 }
 
 function generateConfirmModal(title, body, confirmText, denyText) {
+
+/**
+ * Confirm modal builder.
+ * confirm button calls runConfirm('<lowercased confirmText>')
+ */
 
   let container = document.createElement('div');
 
@@ -761,20 +954,32 @@ function generateConfirmModal(title, body, confirmText, denyText) {
 
 async function generateZIP(files = [], startingDirectory = '/') {
 
+/**
+ * Creates a ZIP (Blob URL) from a list of file objects that have .source.
+ *
+ * @param {Array<Object>} files - each must have {path, source}
+ * @param {string} startingDirectory - path prefix to remove when naming files inside zip
+ * @returns {Promise<string>} object URL for the zip blob
+ */
+
   let proms = [];
 
   let zipper = new zip.ZipWriter(new zip.BlobWriter('application/zip'));
 
   for (let file of files) {
 
+    // Make zip-internal path relative to startingDirectory
     let filepath = file.path.slice(startingDirectory.length + 1);
-	  
+
+    // Only add files where we have source contents available
     if (file.source) proms.push(zipper.add(filepath, new zip.TextReader(file.source)));
 
   }
 
+  // Always close the zip last
   proms.push(zipper.close());
   
+  // zipper.close() resolves to the zip blob (last promise)
   return Promise.all(proms)
 
     .then(blob => URL.createObjectURL(blob.pop()));
@@ -786,6 +991,11 @@ async function generateZIP(files = [], startingDirectory = '/') {
 /** ---- [GET ACCESS] ---- **/
 
 async function getAccessGroups() {
+
+/**
+ * Returns a map of access group name => array of members
+ * (member list is split by ", " unless it is "N/A")
+ */
 
   return api.reports_custom({report : 'groups', g_memberlist: 'on'})
 
@@ -805,6 +1015,11 @@ async function getAccessGroups() {
 
 async function getAssets(page) {
 
+/**
+ * Returns dependency entries of type 'a' (assets) for a given page.
+ * Output items are normalized to {site, name, path, type:'asset'}.
+ */
+
   return api.files_dependencies({site : page.site, path : page.path})
 
     .then(data => {
@@ -822,6 +1037,7 @@ async function getAssets(page) {
 
         }));
 
+      // If API returned unexpected shape, pass through raw data
       return data;
 
     });
@@ -831,6 +1047,11 @@ async function getAssets(page) {
 /** ---- [GET BINARY FILES] ---- **/
 
 async function getBinaryFiles(page) {
+
+/**
+ * Returns dependency entries of type 'f' (files) excluding .pcf for a given page.
+ * Output items are normalized to {site, path, type:'binary'}.
+ */
 
   return api.files_dependencies({site : page.site, path : page.path})
 
@@ -860,11 +1081,20 @@ async function getBinaryFiles(page) {
 
 async function getComponents() {
 
+/**
+ * Returns the component list (Omni component API).
+ */
+
   return api.components_list();
 
 }
 
 async function getComponentDependents(name) {
+
+/**
+ * Returns pages that depend on a given component name.
+ * Normalizes output to page objects with a generated dm_tag.
+ */
 
   return api.components_dependents({name : name})
 
@@ -885,13 +1115,16 @@ async function getComponentDependents(name) {
 
 async function getCurrentFile() {
 
+/**
+ * Attempts to get the current file from the gadget context.
+ * Normalizes to a common view/file object shape.
+ */
+
   return gadget.getFileInfo()
 
     .then(data => {
 
       if (!data) return data;
-
-      log('file info', data);
 
       return {
 
@@ -911,6 +1144,11 @@ async function getCurrentFile() {
 
 async function getCurrentLocation() {
 
+/**
+ * Uses window hash routing to infer the current view when there is no file context.
+ * view.type can be: directory | dashboard | report | other
+ */
+
   return gadget.getLocation()
 
     .then(location => {
@@ -923,6 +1161,7 @@ async function getCurrentLocation() {
 
       let directoryHash = `${hashBase}/browse/staging`;
 
+      // Directory browsing route
       if (hash.startsWith(directoryHash)) {
 
         view.path = (hash === directoryHash) ? '/' : hash.replace(directoryHash, '');
@@ -930,6 +1169,7 @@ async function getCurrentLocation() {
 
       }
 
+      // Dashboard route
       if (hash.replace(/\/$/, '') === hashBase) {
 
         view.path = '';
@@ -937,6 +1177,7 @@ async function getCurrentLocation() {
 
       }
 
+      // Report route
       if (hash.startsWith(`${hashBase}/reports`)) {
 
         view.path = hash.replace(hashBase, '');
@@ -944,6 +1185,7 @@ async function getCurrentLocation() {
 
       }
 
+      // Fallback route
       if (!view.type) {
 
         view.path = hash.replace(hashBase, '');
@@ -959,20 +1201,27 @@ async function getCurrentLocation() {
 
 async function getCurrentView() {
 
+/**
+ * Returns the best-available current view:
+ * - file context if available
+ * - otherwise inferred from URL hash
+ */
+
   return getCurrentFile()
 
-    .then(file => {
-
-      return (file) ? file : getCurrentLocation();
-
-    });
+    .then(file => (file) ? file : getCurrentLocation());
 
 }
 
 
-/** ------ [GET TAG] ------ **/
+/** ------ [GET DM TAG] ------ **/
 
 async function getDependencyTag(page) {
+
+/**
+ * Returns the dependency tag (dm_tag) for a page.
+ * Assumes files_list returns the page as entries[0].
+ */
 
   return api.files_list({site : page.site, path : page.path})
 
@@ -982,6 +1231,10 @@ async function getDependencyTag(page) {
 
 async function getDirectoryDmTag(directory) {
 
+/**
+ * Returns directory dm_tag for a directory.
+ */
+
   return api.files_list({site : directory.site, path : directory.path})
 
     .then(data => data.dm_tag);
@@ -990,22 +1243,37 @@ async function getDirectoryDmTag(directory) {
 
 async function getDmTagByUrl(url) {
 
+/**
+ * Converts a public URL into a CMS dependency tag by:
+ * 1) normalizing scheme
+ * 2) resolving domain -> site
+ * 3) walking the path piece-by-piece using getDirectoryEntry() (case-insensitive match)
+ * 4) converting extensions to .pcf where relevant
+ * 5) getting the dependency tag for the final resolved path
+ *
+ * NOTE: This does multiple sequential awaits in a loop (can be slower on deep paths).
+ */
+
   if (url.startsWith('http://')) url = url.replace('http://', 'https://');
 
   if (!url.startsWith('http')) url = `https://${url}`;
 
   let urlObj = new URL(url);
 
+  // We build the CMS path incrementally by resolving each segment
   let path = '';
   
   let parts = urlObj.pathname.split('/').filter(item => item);
 
+  // Find which CMS site corresponds to the domain
   let site = await getSiteByDomain(urlObj.hostname);
 
   for (let part of parts) {
 
+    // Normalize extension to CMS page extension
     if (part.includes('.')) part = part.replace(/\.(htm|aspx)$/i, '.pcf');
 
+    // Resolve actual entry name (handles case/canonical names)
     let entry = await getDirectoryEntry({site : site, path : path} , part);
 
     part = entry.file_name;
@@ -1014,6 +1282,7 @@ async function getDmTagByUrl(url) {
 
   }
 
+  // Default file behavior for root and directories
   if (parts.length === 0) path = '/default.htm';
 
   if (!path.includes('.')) path += '/default.htm';
@@ -1025,6 +1294,15 @@ async function getDmTagByUrl(url) {
 /** ------ [GET DIRECTORY] ------ **/
 
 async function getDirectories(directory, includeSubdirs = false, filters = []) {
+
+/**
+ * Gets directories using a custom "directories" report.
+ * Filters out common excluded folders plus any caller-provided filters.
+ *
+ * @param {Object|string} directory - directory object OR starting path string
+ * @param {boolean} includeSubdirs - include nested directories or only exact startPath
+ * @param {Array<string>} filters - additional path substrings to exclude
+ */
 
   let startPath = (typeof directory === 'string') ? directory : directory.path
 
@@ -1044,8 +1322,10 @@ async function getDirectories(directory, includeSubdirs = false, filters = []) {
 
       .filter(entry => {
 
+        // If not including subdirs, only keep directories exactly at startPath
         if (!includeSubdirs) if (entry.d_address !== startPath) return false;
 
+        // Exclusion list + caller filters
         if (['/_navigation', '/_resources', '/bin', ...filters].some(value => entry.d_address.includes(value))) return false;
 
         return true;
@@ -1069,6 +1349,11 @@ async function getDirectories(directory, includeSubdirs = false, filters = []) {
 
 async function getDirectoryFiles(directory, includeSubdirectories = false, filters = []) {
 
+/**
+ * Gets files/pages within a directory using "products" report.
+ * Optionally limits to direct children (no deep recursion).
+ */
+
   return api.reports_custom({
 
     report : 'products',
@@ -1086,12 +1371,14 @@ async function getDirectoryFiles(directory, includeSubdirectories = false, filte
 
           if (!includeSubdirectories) {
 
+            // Determine how deep this item is under the selected directory
             let subpath = entry.pd_address.replace(directory.path, '');
 
             if (subpath.split('/').length > 2) return false;
 
           }
 
+          // Exclude common folders and caller filters
           if (['/_navigation/', '/_resources/', '/bin/', ...filters].some(value => entry.pd_address.includes(value))) return false; // ignore folders check
 
           return true;
@@ -1105,6 +1392,7 @@ async function getDirectoryFiles(directory, includeSubdirectories = false, filte
           dm_tag : entry.pd_dtag,
           access : entry.pd_access,
           filename : entry.pd_filename,
+          // Convert report path into a usable URL-ish path by swapping filename
           http_path : `${gadget.site}${entry.pd_address.replace(entry.pd_address.split('/').pop(), entry.pd_filename)}`,
           type : (entry.pd_address.includes('.pcf')) ? 'page' : 'file',
 
@@ -1114,6 +1402,10 @@ async function getDirectoryFiles(directory, includeSubdirectories = false, filte
 
 async function getDirectoryEntries(directory) {
 
+/**
+ * Returns raw directory entries (files_list).
+ */
+
   return api.files_list({ site : directory.site, path : directory.path })
 
     .then(data => data.entries);
@@ -1121,6 +1413,11 @@ async function getDirectoryEntries(directory) {
 }
 
 async function getDirectoryEntry(directory, name) {
+
+/**
+ * Finds an entry in a directory by filename, case-insensitive.
+ * Returns the matching entry object or undefined.
+ */
 
   return getDirectoryEntries(directory)
 
@@ -1139,6 +1436,10 @@ async function getDirectoryEntry(directory, name) {
 }
 
 async function getDirectorySettings(directory) {
+
+/**
+ * Returns directory settings as a standalone object (does not mutate input).
+ */
 
   return api.directories_settings({site : directory.site, path : directory.path})
 
@@ -1163,11 +1464,20 @@ async function getDirectorySettings(directory) {
 
 function getElement(query) {
 
+/**
+ * Small DOM helper: returns the first match or null.
+ */
+
   return document.querySelector(query);
 
 }
 
 function getElementText(element) {
+
+/**
+ * Extracts only direct TEXT_NODE content from an element.
+ * (Ignores text content inside nested child elements.)
+ */
 
   let text = '';
 
@@ -1177,7 +1487,16 @@ function getElementText(element) {
 
 }
 
+/**
+ * Returns NodeList or null if empty.
+ * NOTE: Returning null forces callers to null-check;
+ */
 function getElements(query) {
+
+/**
+ * Returns NodeList or null if empty.
+ * NOTE: Returning null forces callers to null-check.
+ */
 
   let list = document.querySelectorAll(query);
 
@@ -1187,19 +1506,46 @@ function getElements(query) {
 
 /** ------ [GET FIND RESULTS] ------ **/
 
-async function getFindReplaceResults(id, site) {
+async function getFindReplaceResults(id, site, {
 
-  await new Promise(resolve => setTimeout(resolve, 1000));
+  initialDelayMs = 750,
+  maxDelayMs = 5000,
 
-  return api.sites_findreplacestatus({id : id, site : site})
+  } = {}) {
 
-    .then(results => (results.finished) ? results : 
+/**
+ * Polls a find/replace job until it finishes.
+ * Includes a simple delay backoff to reduce API load.
+ *
+ * @param {string|number} id
+ * @param {string} site
+ * @param {Object} options
+ * @param {number} options.initialDelayMs
+ * @param {number} options.maxDelayMs
+ */
 
-      getFindReplaceResults(id, site));
+  let delay = initialDelayMs;
+
+  while (true) {
+
+    await new Promise(r => setTimeout(r, delay));
+
+    const results = await api.sites_findreplacestatus({ id, site });
+
+    if (results.finished) return results;
+
+    // Backoff: increase delay up to the cap
+    delay = Math.min(maxDelayMs, Math.round(delay * 1.3));
+
+  }
 
 }
 
 async function getLatestVersion(file) {
+
+/**
+ * Returns latest revision number (0 if no versions exist).
+ */
 
   return api.files_versions({site : file.site, path : file.path})
 
@@ -1208,6 +1554,11 @@ async function getLatestVersion(file) {
 }
 
 async function getLockedFiles() {
+
+/**
+ * Gets locked files across all sites (optionally including dev sites).
+ * Normalizes entry types into 'binary' or 'page' where applicable.
+ */
 
   return getSites(false)
 
@@ -1221,12 +1572,16 @@ async function getLockedFiles() {
 
           return data.filter(entry => {
 
-            if (entry.type === 'asset') return false; // ignore assets for now
+            // Skip assets
+            if (entry.type === 'asset') return false;
 
-            if (entry.path.includes('/recycle_bin')) return false; // ignore recycled files
+            // Skip recycled items
+            if (entry.path.includes('/recycle_bin')) return false; 
 
+            // Annotate site onto each entry
             entry.site = site.name;
 
+            // Normalize file types into your UI categories
             if (entry.type === 'img' || entry.type === 'doc') entry.type = 'binary';
 
             if (entry.type === 'pcf' || entry.type === 'txt' || entry.type === 'html') entry.type = 'page';
@@ -1237,6 +1592,7 @@ async function getLockedFiles() {
 
         }));
 
+      // Flatten per-site results into one array
       return Promise.all(promises)
 
         .then(results => results.flat());
@@ -1248,6 +1604,12 @@ async function getLockedFiles() {
 /** ------ [GET PAGE] ------ **/
 
 async function getPageContent(page, labels = []) {
+
+/**
+ * Gets page content:
+ * - If no labels: returns the default content response
+ * - If labels: fetches each label version and flattens results
+ */
 
   if (labels.length === 0) return api.files_content({site : page.site, path : page.path});
 
@@ -1262,7 +1624,15 @@ async function getPageContent(page, labels = []) {
 }
 
 async function getPageContentLinks(page) {
-	
+
+/**
+ * Parses the page HTML content and extracts all links in <main>.
+ * Returns a normalized array of {href, text, type:'link'}.
+ *
+ * NOTE: Uses Document.parseHTMLUnsafe - assumes the environment provides it.
+ */
+
+  // Lazy-load content if not already present
   if (!page.content) page.content = await getPageContent(page);
 	
   let html = Document.parseHTMLUnsafe(page.content);
@@ -1281,6 +1651,11 @@ async function getPageContentLinks(page) {
 
 async function getPageSource(page, label = '') {
 
+/**
+ * Returns source (code) of a page.
+ * Optional label lets you fetch a specific version.
+ */
+
   let config = {
 
     site : page.site,
@@ -1298,6 +1673,10 @@ async function getPageSource(page, label = '') {
 
 async function getPageUrl(page) {
 
+/**
+ * Returns public http_path for a page.
+ */
+
   return api.files_list({site : page.site, path : page.path})
 
     .then(data => data.entries[0].http_path);
@@ -1305,6 +1684,10 @@ async function getPageUrl(page) {
 }
 
 async function getPublishingStatus(page) {
+
+/**
+ * Returns no_publish flag for a page (publishing status).
+ */
 
   return api.files_settings({site : page.site, path : page.path})
 
@@ -1315,6 +1698,11 @@ async function getPublishingStatus(page) {
 /** ------ [GET SITE] ------ **/
 
 async function getSiteByDomain(domain) {
+
+/**
+ * Maps a domain to a CMS site by comparing api.sites_list() URLs.
+ * Returns site name or null if not found.
+ */
 
   domain = domain.toLowerCase();
 
@@ -1338,19 +1726,34 @@ async function getSiteByDomain(domain) {
 
 async function getSiteList(excludeDevSites = true) {
 
+/**
+ * Returns an array of site names, optionally excluding DEV_SITES.
+ */
+
   return api.sites_list()
 
     .then(list => {
 
-      if (excludeDevSites) list.filter((entry) => !DEV_SITES.includes(entry.site));
+      let filtered = (excludeDevSites) ?
 
-      return list.map((entry) => entry.site);
+        list.filter(entry => !DEV_SITES.includes(entry.site)) :
+
+        list;
+
+      return filtered.map((entry) => entry.site);
 
     });
 
 }
 
 async function getSites(excludeDevSites = true) {
+
+/**
+ * Returns list of sites from a custom "sites" report.
+ * Filters:
+ * - optional dev sites exclusion
+ * - only records where s_name === s_targetname (avoids aliases/duplicates)
+ */
 
   return api.reports_custom({site : gadget.site, report : 'sites', s_serverpath : 'on'})
 
@@ -1362,7 +1765,12 @@ async function getSites(excludeDevSites = true) {
 
         .filter((entry) => entry.s_name === entry.s_targetname)
 
-        .map((entry) => ({name : entry.s_name, http_path : entry.s_serverpath.replace(/\/$/, '')}));
+        .map((entry) => ({
+
+          name : entry.s_name,
+          http_path : entry.s_serverpath.replace(/\/$/, ''),
+
+        }));
 
     });
 
@@ -1371,6 +1779,10 @@ async function getSites(excludeDevSites = true) {
 /** ------ [GET SUBSCRIBERS] ------ **/
 
 async function getSubscribers(page) {
+
+/**
+ * Returns page subscribers for a given page, normalized to {site, path, type:'page'}.
+ */
 
   return api.files_products({site : page.site, path : page.path, subscribers : true})
 
@@ -1392,6 +1804,10 @@ async function getSubscribers(page) {
 
 async function getStagingTarget(site) {
 
+/**
+ * Convenience helper: returns the first target containing "-staging".
+ */
+
   return getTargets(site).then(targets => {
 
       for (let target of targets) if (target.includes('-staging')) return target;
@@ -1404,7 +1820,11 @@ async function getStagingTarget(site) {
 
 async function getTargets(site) {
 
-  return api.sites_targets({site : site})
+/**
+ * Returns list of publishing targets for a site.
+ */
+
+  return api.sites_targets({ site : site })
 
     .then(data => data.targets);
 
@@ -1412,12 +1832,13 @@ async function getTargets(site) {
 
 
 /** ------ [GET TODAY] ------ **/
-/**
- * Returns today as a date string in the format of [YYYY-MM-DD].
- *
- * @returns {string}
- */
+
 function getToday() {
+
+/**
+ * Returns today as a date string in the format [YYYY-MM-DD].
+ * Uses 'en-CA' locale because it formats ISO-like date strings.
+ */
 
   return new Date().toLocaleDateString('en-CA');
 
@@ -1427,13 +1848,23 @@ function getToday() {
 
 async function getUser(username = '') {
 
-  if (!!username) return api.users_view();
+/**
+ * Returns user info:
+ * - if username is empty -> current user
+ * - else -> specific user
+ */
 
-  return api.users_view({user : username});
+  if (!username) return api.users_view();
+
+  return api.users_view({ user : username });    
 
 }
 
 async function getUsers() {
+
+/**
+ * Returns a map: username -> user object (normalized fields).
+ */
 
   return api.users_list()
 
@@ -1466,6 +1897,14 @@ async function getUsers() {
 
 function groupByProperty(array, property) {
 
+/**
+ * Groups an array of objects by a property value.
+ *
+ * @param {Array<Object>} array
+ * @param {string} property - key name to group by
+ * @returns {Object} { [propertyValue]: [entries...] }
+ */
+
   return array.reduce((acc, entry) => { // acc = accumulator
 
     let key = entry[property];
@@ -1484,10 +1923,16 @@ function groupByProperty(array, property) {
 
 async function initTooltips() {
 
+/**
+ * Initializes Bootstrap tooltips.
+ * Removes any existing tooltip bubble before re-initializing.
+ */
+
   let old = getElement('.tooltip.fade.show');
 
   if (old) old.remove();
 
+  // Only initialize tooltips that haven't already been initialized
   $('[data-toggle="tooltip"]:not([data-original-title])').tooltip({container : 'body', trigger : 'hover'});
 
 }
@@ -1495,6 +1940,12 @@ async function initTooltips() {
 /** ------ [LOAD] ------ **/
 
 async function loadBreadcrumb(view) {
+
+/**
+ * Renders breadcrumb UI into #breadcrumb container.
+ *
+ * @param {Object} view
+ */
 
   let container = getElement('#breadcrumb');
 
@@ -1504,17 +1955,16 @@ async function loadBreadcrumb(view) {
 
 }
 
-/** ------ [LOG] ------ **/
-
-function log(text, value) {
-
-  if (api.logging) console.log(`[${api.name}] ${text} : `, value);
-
-}
-
 /* -------- [PUBLISH][UNPUBLISH] -------- */
 
 async function publishPage(page, target = '', override = false) {
+
+/**
+ * Publishes a page to a target.
+ * @param {Object} page - {site, path}
+ * @param {string} target - optional target override
+ * @param {boolean} override - publish even if warnings/locks allow override
+ */
 
   let config = {site : page.site, path : page.path};
 
@@ -1528,6 +1978,11 @@ async function publishPage(page, target = '', override = false) {
 
 async function publishPageFull(page) {
 
+/**
+ * Publishes to all targets found for the page's site.
+ * Ensures `page.targets` exists.
+ */
+
   let promises = [];
 
   if (!page.targets) page.targets = await getTargets(page.site);
@@ -1539,6 +1994,10 @@ async function publishPageFull(page) {
 }
 
 async function unpublishPage(page, target = '') {
+
+/**
+ * Unpublishes (deletes remote) for a page.
+ */
 
   let config = {
 
@@ -1554,11 +2013,14 @@ async function unpublishPage(page, target = '') {
 
 }
 
-/** ------ [REMOVE] ------ **/
-
 /** ------ [REPLACE] ------ **/
 
 async function replaceText(siteName, paths = ['/'], text = '', replacement = '') {
+
+/**
+ * Runs a find/replace job across paths and waits for completion.
+ * include_components=true enables searching component content.
+ */
 
   return api.sites_findreplace({
 
@@ -1582,8 +2044,14 @@ async function replaceText(siteName, paths = ['/'], text = '', replacement = '')
 
 async function setDirectoriesAccess(directories, access) {
 
+/**
+ * Sets access for many directories.
+ * Returns counts of updated vs already-correct.
+ */
+
   let promises = [];
 
+ // Only update directories that don't already have the desired access
   let filtered = directories.filter(entry => entry.access !== access);
 
   for (let directory of filtered) promises.push(setDirectorySettings(directory, {access : access}));
@@ -1600,6 +2068,11 @@ async function setDirectoriesAccess(directories, access) {
 }
 
 async function setDirectoriesExtensions(directories, extensions) {
+
+/**
+ * Sets extensions for many directories.
+ * Returns counts of updated vs already-correct.
+ */
 
   let promises = [];
 
@@ -1619,6 +2092,15 @@ async function setDirectoriesExtensions(directories, extensions) {
 }
 
 async function setDirectorySettings(directory, settings = {}) {
+
+/**
+ * Updates directory settings by:
+ * 1) fetching current settings
+ * 2) building a POST payload with existing values
+ * 3) overlaying caller changes (including directory variables)
+ *
+ * NOTE: Directory variables are sent as keys prefixed with '_' in the payload.
+ */
 
   return api.directories_settings({site : directory.site, path : directory.path})
 
@@ -1648,10 +2130,13 @@ async function setDirectorySettings(directory, settings = {}) {
 
       };
 
+      // Attach existing variables as _varName keys
       for (let key of Object.keys(data.variables)) config['_'+key] = data.variables[key];
 
+      // Overlay direct setting overrides
       for (let key of Object.keys(settings)) config[key] = settings[key];
 
+      // Overlay variable overrides (settings.variables) using _varName keys
       if (settings.variables) for (let key of Object.keys(settings.variables)) config['_'+key] = settings.variables[key];
 
       return api.directories_settings(config, 'POST');
@@ -1661,6 +2146,13 @@ async function setDirectorySettings(directory, settings = {}) {
 }
 
 async function setFileSettings(file, settings = {}) {
+
+/**
+ * Updates file settings similarly to setDirectorySettings():
+ * 1) fetch current settings
+ * 2) build POST payload using existing values
+ * 3) overlay caller overrides
+ */
 
   return api.files_settings({site : file.site, path : file.path})
 
@@ -1676,7 +2168,7 @@ async function setFileSettings(file, settings = {}) {
         exclude_orphan : data.exclude_orphan,
         dynamic_page_forward_uuid : data.dynamic_page_forward_uuid,
         feed : data.feed,
-        no_publish : !data.no_publish,
+        no_publish : data.no_publish,
         no_search : data.no_search,
         no_sitemap : data.no_sitemap,
         page_forwarding : data.page_forwarding,
@@ -1687,8 +2179,10 @@ async function setFileSettings(file, settings = {}) {
 
       };
 
-      for (let key of Object.keys(config)) if (!config[key]) delete config[key]; // remove falsy entries
+      // Remove falsy entries to avoid sending empty fields
+      for (let key of Object.keys(config)) if (!config[key]) delete config[key];
 
+      // Overlay caller overrides
       for (let key of Object.keys(settings)) config[key] = settings[key];
 
       return api.files_settings(config, 'POST');
@@ -1698,6 +2192,11 @@ async function setFileSettings(file, settings = {}) {
 }
 
 async function setFilesAccess(files, access) {
+
+/**
+ * Sets access for many files.
+ * Returns counts of updated vs already-correct.
+ */
 
   let promises = [];
 
@@ -1718,12 +2217,25 @@ async function setFilesAccess(files, access) {
 
 async function setLocation(location = '/') {
 
+/**
+ * Updates gadget location (hash routing).
+ *
+ * @param {string} location - relative location path
+ */
+
   return gadget.setLocation(location);
 
 }
 
 
 async function setView(view) {
+
+/**
+ * Converts a view object into a gadget location string.
+ * - "document/file/image/page" types => preview route
+ * - "directory" => browse route
+ * - otherwise => view.path as-is
+ */
 
   if (gadget.site !== view.site) return;
 
@@ -1739,36 +2251,39 @@ async function setView(view) {
 
 /* -------- [SORT] -------- */
 
-/**
- * Sorts an array of objects by a key-value pair of each object.
- * @param arr The array to sort.
- * @param sortKey The key pair used to sort the objects by.
- * @returns {Array} Sorted array.
- */
 function sortObjs(arr, sortKey) {
-  if (arr.length === 0) return [];
-  let sorted = [];
 
-  for (let item of arr) {
-    for (let i = 0; i <= arr.length; i++) {
-      if (sorted.length === i) {
-        sorted.push(item);
-        break;
-      } else if (typeof item[sortKey] === 'string') {
-        if (item[sortKey].localeCompare(sorted[i][sortKey]) === -1) {
-          sorted.splice(i, 0, item);
-          break;
-        }
-      } else if (item[sortKey] < sorted[i][sortKey]) {
-        sorted.splice(i, 0, item);
-        break;
-      }
-    }
-  }
-  return sorted;
+/**
+ * Sorts objects by sortKey.
+ * - Strings use localeCompare
+ * - null/undefined values sort last
+ *
+ * @param {Array<Object>} arr
+ * @param {string} sortKey
+ * @returns {Array<Object>} new sorted array (does not mutate original)
+ */
+
+  return [...arr].sort((a, b) => {
+    const av = a?.[sortKey];
+    const bv = b?.[sortKey];
+
+    if (typeof av === 'string' && typeof bv === 'string') return av.localeCompare(bv);
+    if (av == null && bv == null) return 0;
+    if (av == null) return 1;
+    if (bv == null) return -1;
+
+    return av < bv ? -1 : av > bv ? 1 : 0;
+  });
+
 }
 
+
 function sortUsersByCase(a, b) {
+
+/**
+ * Sort comparator for user objects that prioritizes case-insensitive ordering,
+ * but preserves deterministic ordering when only case differs.
+ */
 
   let nameA = a.reverse_name;
   let nameB = b.reverse_name;
@@ -1787,10 +2302,12 @@ function sortUsersByCase(a, b) {
 
 /** -------- [TOGGLE] -------- **/
 
+async function toggleLoading() {
+
 /**
  * Toggles between #loading panel and #main panel.
+ * Useful for switching between "busy" and "ready" UI states.
  */
-async function toggleLoading() {
 
   getElement('#loading').classList.toggle('d-none');
   getElement('#main').classList.toggle('d-none');
@@ -1801,11 +2318,22 @@ async function toggleLoading() {
 
 async function unlockFile(file) {
 
+/**
+ * Forces check-in (unlock) of a file.
+ * override:true means it will unlock even if another user locked it.
+ */
+
   return api.files_checkin({site : file.site, path : file.path, override : true});
 
 }
 
 async function unlockFiles(files) {
+
+/**
+ * Unlocks a batch of files in parallel.
+ *
+ * @param {Array<Object>} files - {site, path}
+ */
 
   let promises = [];
 
