@@ -49,12 +49,29 @@ This repo is intentionally *plain HTML + JS* (no build step). It’s designed to
 // your-gadget.js
 let api;
 
+$(() => gadget.ready(init));
+
+async function init() {
+  api = new CmsApi();
+
+  // Host context (site, user, token, etc.) is now available on `gadget`.
+  console.log('site : ', gadget.site);
+  console.log('user : ', gadget.user);
+
+  // Your UI setup here...
+}
+```
+or
+```js
+// your-gadget.js
+let api;
+
 $(() => gadget.ready(async () => {
   api = new CmsApi();
 
   // Host context (site, user, token, etc.) is now available on `gadget`.
-  console.log('site:', gadget.site);
-  console.log('user:', gadget.user);
+  console.log('site : ', gadget.site);
+  console.log('user : ', gadget.user);
 
   // Your UI setup here...
 }));
@@ -62,24 +79,25 @@ $(() => gadget.ready(async () => {
 
 ### 2) Get the current file (page/asset) the user is looking at
 
-```js
-$(() => gadget.ready(async () => {
-  const fileInfo = await gadget.getFileInfo(); // host-provided context
-  console.log(fileInfo);
-
-  // Typical fields include site + staging path, depending on where you are in the UI.
-  // Example usage:
-  // const { site, path } = fileInfo;
-}));
-```
-
 If you want “best available context” (file if present; otherwise inferred from the URL), `gadget-common.js` includes:
 
 ```js
-$(() => gadget.ready(async () => {
+async function init() {
   const view = await getCurrentView(); // returns a file object or a location object
-  console.log(view.type, view.path);
-}));
+  console.log('path: ', view.path);
+  console.log('type: ', view.type);
+}
+```
+
+or
+
+```js
+function init() {
+  getCurrentView().then(view => { // returns a file object or a location object
+    console.log('path: ', view.path);
+    console.log('type: ', view.type);
+  });
+}
 ```
 
 ### 3) List files in a directory
@@ -104,13 +122,28 @@ $(() => gadget.ready(async () => {
 ### 4) Read a file’s source content
 
 ```js
-$(() => gadget.ready(async () => {
-  const site = gadget.site;
-  const path = '/about/index.pcf';
+async function init() {
+  const file = {
+    site : gadget.site,
+    path : '/about/index.pcf',
+  }
 
-  const content = await api.files_content({ site, path });
-  console.log(content);
-}));
+  const content = await getPageContent(file);
+  console.log('content : ', content);
+}
+```
+or
+```js
+function init() {
+  const file = {
+    site : gadget.site,
+    path : '/about/index.pcf',
+  }
+
+  getPageContent(file).then(content => {
+    console.log('content : ', content);
+  });
+}
 ```
 
 ### 5) Checkout → update → checkin (typical edit workflow)
